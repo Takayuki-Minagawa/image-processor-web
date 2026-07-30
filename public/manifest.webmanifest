@@ -1,0 +1,18 @@
+{
+  "name": "Pixelweave Studio",
+  "short_name": "Pixelweave",
+  "description": "端末内で完結する、レイヤー対応のWeb画像編集スタジオ",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#11131a",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
