@@ -217,6 +217,16 @@ test.describe('Pixelweave editor', () => {
 
     const menu = page.getByRole('dialog', { name: 'ファイルメニュー' })
     await expect(menu).toBeVisible()
+    const closeMenu = menu.getByRole('button', { name: '閉じる' })
+    await expect(closeMenu).toBeFocused()
+    const dialogAccessibility = await new AxeBuilder({ page })
+      .include('.modal')
+      .analyze()
+    expect(
+      dialogAccessibility.violations.filter(
+        ({ impact }) => impact === 'serious' || impact === 'critical',
+      ),
+    ).toEqual([])
     await expect(
       menu.getByRole('button', { name: 'プロジェクトを開く' }),
     ).toBeVisible()
@@ -224,6 +234,17 @@ test.describe('Pixelweave editor', () => {
       menu.getByRole('button', { name: 'プロジェクトを保存' }),
     ).toBeVisible()
 
+    await page.keyboard.press('Shift+Tab')
+    await expect(
+      menu.getByRole('button', { name: '画像を書き出す' }),
+    ).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(closeMenu).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(menuButton).toBeFocused()
+
+    await menuButton.click()
     await menu.getByRole('button', { name: '新しいキャンバス' }).click()
     await expect(
       page.getByRole('dialog', { name: '新しいキャンバス' }),
@@ -283,19 +304,157 @@ test.describe('Pixelweave editor', () => {
     expect(autosaved.fabricCanvas.objects).toHaveLength(1)
   })
 
-  test('不正なプロジェクトのエラーを日本語で表示する', async ({ page }) => {
+  test('自動保存の検証失敗を処理し、具体的な上限理由を表示する', async ({
+    page,
+  }) => {
+    const pageErrors: Error[] = []
+    page.on('pageerror', (error) => pageErrors.push(error))
+    const timestamp = new Date().toISOString()
+    const objects = Array.from({ length: 500 }, (_, index) => ({
+      type: 'Rect',
+      version: '7.4.0',
+      originX: 'left',
+      originY: 'top',
+      left: index % 25,
+      top: Math.floor(index / 25),
+      width: 1,
+      height: 1,
+      fill: '#111827',
+      strokeWidth: 0,
+      editorId: `limit-layer-${index}`,
+      editorName: `Limit layer ${index + 1}`,
+      editorLocked: false,
+    }))
+
     await page
       .locator('input[type="file"][accept=".pwx.json,.json,application/json"]')
       .setInputFiles({
-        name: 'broken.pwx.json',
+        name: 'layer-limit.pwx.json',
         mimeType: 'application/json',
-        buffer: Buffer.from('{not json', 'utf8'),
+        buffer: Buffer.from(
+          JSON.stringify({
+            appId: 'image-processor-web',
+            schemaVersion: 1,
+            canvasSize: { width: 320, height: 180 },
+            fabricCanvas: { version: '7.4.0', objects },
+            metadata: {
+              name: 'レイヤー上限',
+              createdAt: timestamp,
+            },
+            updatedAt: timestamp,
+          }),
+          'utf8',
+        ),
       })
+
+    await expect(
+      page.getByText('プロジェクトを開きました。', { exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '矩形を追加' }).click()
+
+    await expect(
+      page.getByText(
+        'プロジェクトのレイヤー数が上限（500件）を超えています。',
+        { exact: true },
+      ),
+    ).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByText('自動保存失敗', { exact: true })).toBeVisible()
+    expect(pageErrors).toEqual([])
+  })
+
+  test('未保存の編集がある場合は自動保存の復元前に確認する', async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      const timestamp = new Date().toISOString()
+      localStorage.setItem(
+        'image-processor-web:autosave:v1',
+        JSON.stringify({
+          appId: 'image-processor-web',
+          schemaVersion: 1,
+          canvasSize: { width: 320, height: 180 },
+          fabricCanvas: { objects: [] },
+          metadata: {
+            name: '復元対象',
+            createdAt: timestamp,
+          },
+          updatedAt: timestamp,
+        }),
+      )
+    })
+    await page.reload()
+
+    const restore = page.getByRole('button', { name: '復元する' })
+    await expect(restore).toBeVisible()
+    await addLayerAndWait(page, '矩形を追加')
+
+    const dismissConfirmation = page.waitForEvent('dialog').then((dialog) => {
+      expect(dialog.message()).toContain('現在の未保存の編集を閉じて')
+      return dialog.dismiss()
+    })
+    await restore.click()
+    await dismissConfirmation
+
+    await expect(page.getByLabel('プロジェクト名')).toHaveValue(
+      '無題のデザイン',
+    )
+    await expect(
+      page.getByRole('list', { name: 'レイヤー' }).getByRole('listitem'),
+    ).toHaveCount(1)
+
+    const acceptConfirmation = page.waitForEvent('dialog').then((dialog) => {
+      expect(dialog.message()).toContain('現在の未保存の編集を閉じて')
+      return dialog.accept()
+    })
+    await restore.click()
+    await acceptConfirmation
+
+    await expect(page.getByLabel('プロジェクト名')).toHaveValue('復元対象')
+    await expect(
+      page.getByRole('list', { name: 'レイヤー' }).getByRole('listitem'),
+    ).toHaveCount(0)
+  })
+
+  test('不正なプロジェクトのエラーを日本語で表示する', async ({ page }) => {
+    const projectInput = page.locator(
+      'input[type="file"][accept=".pwx.json,.json,application/json"]',
+    )
+    await projectInput.setInputFiles({
+      name: 'broken.pwx.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{not json', 'utf8'),
+    })
 
     await expect(
       page.getByText('プロジェクトファイルのJSON形式が正しくありません。', {
         exact: true,
       }),
+    ).toBeVisible()
+
+    const timestamp = new Date().toISOString()
+    await projectInput.setInputFiles({
+      name: 'oversized.pwx.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          appId: 'image-processor-web',
+          schemaVersion: 1,
+          canvasSize: { width: 9_000, height: 100 },
+          fabricCanvas: { objects: [] },
+          metadata: {
+            name: '大きすぎるプロジェクト',
+            createdAt: timestamp,
+          },
+          updatedAt: timestamp,
+        }),
+        'utf8',
+      ),
+    })
+    await expect(
+      page.getByText(
+        '画像寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
+        { exact: true },
+      ),
     ).toBeVisible()
   })
 

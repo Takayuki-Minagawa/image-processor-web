@@ -12,6 +12,19 @@ export const MAX_IMAGE_BYTES = 50 * 1024 * 1024
 export const MAX_IMAGE_DIMENSION = 8_192
 export const MAX_IMAGE_PIXELS = 64 * 1_024 * 1_024
 
+export type ImageSafetyErrorCode =
+  'image-dimension-limit' | 'image-dimension-mismatch'
+
+export class ImageSafetyError extends RangeError {
+  readonly code: ImageSafetyErrorCode
+
+  constructor(code: ImageSafetyErrorCode, message: string) {
+    super(message)
+    this.name = 'ImageSafetyError'
+    this.code = code
+  }
+}
+
 const EMBEDDED_IMAGE_DATA_URL_METADATA =
   /^data:(image\/(?:png|jpeg|webp))(?:;charset=[^;,]+)?;base64,/i
 
@@ -47,7 +60,8 @@ export const assertSafeImageDimensions = (
   dimensions: ImageDimensions,
 ): ImageDimensions => {
   if (!imageDimensionsAreSafe(dimensions)) {
-    throw new RangeError(
+    throw new ImageSafetyError(
+      'image-dimension-limit',
       'Image dimensions exceed the 8,192 px / 64 MP safety limit.',
     )
   }

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -208,17 +209,90 @@ function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
-const PROJECT_ERROR_MESSAGES: Record<string, string> = {
+const ERROR_CODE_MESSAGES: Record<string, string> = {
   'invalid-json': 'プロジェクトファイルのJSON形式が正しくありません。',
   'invalid-schema': 'プロジェクトファイルの内容が現在の形式に一致しません。',
   'unsupported-version': 'このプロジェクトのバージョンには対応していません。',
   'invalid-app': 'このファイルはPixelweaveのプロジェクトではありません。',
+  'save-failed':
+    '編集内容を端末に自動保存できませんでした。プロジェクトを手動保存してください。',
+  'load-failed': '前回の自動保存データを読み込めませんでした。',
+  'clear-failed': '不要な自動保存データを削除できませんでした。',
+  'invalid-editor-snapshot':
+    '編集データの形式が不正なため保存または復元できません。',
+  'unsafe-project-data':
+    'プロジェクトに安全でないデータが含まれているため開けません。',
+  'project-structure-too-large':
+    'プロジェクトの構造が大きすぎるため安全に開けません。',
+  'project-object-limit':
+    'プロジェクトのレイヤー数が上限（500件）を超えています。',
+  'image-byte-limit': 'プロジェクト内の画像は1枚50 MB以下にしてください。',
+  'image-dimension-limit':
+    '画像寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
+  'project-decode-limit':
+    'プロジェクト内の画像合計が復元上限（128 MP）を超えています。',
+  'invalid-image-data':
+    'プロジェクト内の画像データまたは形式が不正なため開けません。',
+  'image-dimension-mismatch':
+    '画像ヘッダーとデコード結果の寸法が一致しません。',
 }
+
+const VALIDATION_ERROR_MESSAGES: Array<{
+  pattern: RegExp
+  message: string
+}> = [
+  {
+    pattern: /only embedded PNG, JPEG, or WebP images/i,
+    message:
+      'プロジェクト内の画像形式が不正です。PNG、JPEG、WebPの埋め込み画像のみ開けます。',
+  },
+  {
+    pattern: /invalid Base64 data|could not be decoded/i,
+    message: 'プロジェクト内の画像データが破損しているため開けません。',
+  },
+  {
+    pattern:
+      /embedded image header is incomplete|dimensions could not be verified/i,
+    message: 'プロジェクト内の画像サイズを安全に確認できませんでした。',
+  },
+  {
+    pattern: /no larger than 50 MB/i,
+    message: 'プロジェクト内の画像は1枚50 MB以下にしてください。',
+  },
+  {
+    pattern: /8,192 px \/ 64 MP safety limit|8,192 px \/ 64 MP/i,
+    message: '画像寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
+  },
+  {
+    pattern: /128 MP embedded-image decode limit/i,
+    message: 'プロジェクト内の画像合計が復元上限（128 MP）を超えています。',
+  },
+  {
+    pattern: /at most 500 top-level objects/i,
+    message: 'プロジェクトのレイヤー数が上限（500件）を超えています。',
+  },
+  {
+    pattern: /project structure is too large/i,
+    message: 'プロジェクトの構造が大きすぎるため安全に開けません。',
+  },
+  {
+    pattern: /unsafe project key|embedded image sources must be strings/i,
+    message: 'プロジェクトに安全でないデータが含まれているため開けません。',
+  },
+  {
+    pattern: /invalid editor snapshot/i,
+    message: '編集データの形式が不正なため保存または復元できません。',
+  },
+  {
+    pattern: /header does not match its decoded dimensions/i,
+    message: '画像ヘッダーとデコード結果の寸法が一致しません。',
+  },
+]
 
 function userFacingErrorMessage(error: unknown, fallback: string): string {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = String(error.code)
-    if (PROJECT_ERROR_MESSAGES[code]) return PROJECT_ERROR_MESSAGES[code]
+    if (ERROR_CODE_MESSAGES[code]) return ERROR_CODE_MESSAGES[code]
   }
 
   if (error instanceof DOMException) {
@@ -231,6 +305,10 @@ function userFacingErrorMessage(error: unknown, fallback: string): string {
   }
 
   const message = error instanceof Error ? error.message.trim() : ''
+  const validationMessage = VALIDATION_ERROR_MESSAGES.find(({ pattern }) =>
+    pattern.test(message),
+  )
+  if (validationMessage) return validationMessage.message
   return /[\u3040-\u30ff\u3400-\u9fff]/u.test(message) ? message : fallback
 }
 
@@ -257,20 +335,92 @@ function Modal({
   children: ReactNode
   onClose: () => void
 }) {
+  const titleId = useId()
+  const descriptionId = `${titleId}-description`
+  const dialogRef = useRef<HTMLElement>(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current
+      const firstFocusable = dialog?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      )
+      ;(firstFocusable ?? dialog)?.focus()
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus()
+      }
+    }
+  }, [])
+
+  const onDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      onCloseRef.current()
+      return
+    }
+    if (event.key !== 'Tab') return
+
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const focusable = [
+      ...dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter(
+      (element) =>
+        element.getClientRects().length > 0 &&
+        element.getAttribute('aria-hidden') !== 'true',
+    )
+    if (focusable.length === 0) {
+      event.preventDefault()
+      dialog.focus()
+      return
+    }
+
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    const active = document.activeElement
+    if (event.shiftKey && (active === first || !dialog.contains(active))) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialogRef}
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={onDialogKeyDown}
       >
         <div className="modal-heading">
           <div>
             <p className="eyebrow">Pixelweave Studio</p>
-            <h2 id="modal-title">{title}</h2>
-            {description ? <p>{description}</p> : null}
+            <h2 id={titleId}>{title}</h2>
+            {description ? <p id={descriptionId}>{description}</p> : null}
           </div>
           <button
             className="icon-button"
@@ -361,6 +511,7 @@ export default function App() {
   const busyRef = useRef(false)
   const busyDepthRef = useRef(0)
   const updateTimeoutRef = useRef<number | null>(null)
+  const updateInProgressRef = useRef(false)
   const editorOperationGateRef = useRef(new AsyncOperationGate())
 
   const [tool, setTool] = useState<EditorTool>('select')
@@ -434,7 +585,7 @@ export default function App() {
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return
+      if (!dirtyRef.current || updateInProgressRef.current) return
       event.preventDefault()
       event.returnValue = ''
     }
@@ -569,14 +720,6 @@ export default function App() {
       }
       latestAutosaveRequestRef.current = { generation, revision }
 
-      let project: ProjectDocument
-      try {
-        project = makeProject(snapshot)
-      } catch (error) {
-        setAutosaveState('failed')
-        return Promise.reject(error)
-      }
-
       const operation = autosaveQueueRef.current
         .catch(() => undefined)
         .then(async () => {
@@ -585,6 +728,7 @@ export default function App() {
           if (newest.generation === generation && newest.revision > revision) {
             return
           }
+          const project = makeProject(snapshot)
           await autosaveRef.current.save(project)
           const latestAfterSave = latestAutosaveRequestRef.current
           if (
@@ -600,8 +744,10 @@ export default function App() {
           setAutosaveState('failed')
           setStatus({
             kind: 'warning',
-            message:
-              '自動保存の容量が不足しています。プロジェクトを手動保存してください。',
+            message: userFacingErrorMessage(
+              error,
+              '編集内容を自動保存できませんでした。プロジェクトを手動保存してください。',
+            ),
           })
         }
         throw error
@@ -632,7 +778,7 @@ export default function App() {
           pending.snapshot,
           pending.generation,
           pending.revision,
-        )
+        ).catch(() => undefined)
       }, AUTOSAVE_DELAY)
     },
     [enqueueAutosave],
@@ -711,7 +857,6 @@ export default function App() {
       const engine = engineRef.current
       if (!engine && !capturedSnapshot) return
       const snapshot = capturedSnapshot ?? engine!.snapshot()
-      latestSnapshotRef.current = snapshot
       if (!historyRef.current.push(snapshot)) return
       dirtyRef.current = true
       setDirty(true)
@@ -853,10 +998,13 @@ export default function App() {
           setRecoveryAvailable(true)
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         setStatus({
           kind: 'warning',
-          message: '前回の自動保存データを確認できませんでした。',
+          message: userFacingErrorMessage(
+            error,
+            '前回の自動保存データを確認できませんでした。',
+          ),
         })
       })
 
@@ -874,7 +1022,9 @@ export default function App() {
         cancelAnimationFrame(resizeFrameRef.current)
       }
       engineRef.current = null
-      void engine.dispose()
+      void engine.dispose().catch((error: unknown) => {
+        console.error('Pixelweave editor disposal failed', error)
+      })
     }
     // Engine lifetime is intentionally tied to the canvas element.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -882,10 +1032,14 @@ export default function App() {
 
   useEffect(() => {
     if (pwaState.offlineReady) {
-      setStatus({
-        kind: 'success',
-        message: 'オフラインで使う準備ができました。',
-      })
+      setStatus((current) =>
+        current.kind === 'error' || current.kind === 'warning'
+          ? current
+          : {
+              kind: 'success',
+              message: 'オフラインで使う準備ができました。',
+            },
+      )
     }
   }, [pwaState.offlineReady])
 
@@ -1071,11 +1225,11 @@ export default function App() {
       try {
         await waitForEditorOperations()
         const project = parseProject(await file.text())
+        await restoreSnapshot(projectToSnapshot(project))
         cancelPendingHistory()
         cancelPendingAutosave()
         autosaveGenerationRef.current += 1
         const generation = autosaveGenerationRef.current
-        await restoreSnapshot(projectToSnapshot(project))
         const snapshot = engineRef.current!.snapshot()
         latestSnapshotRef.current = snapshot
         revisionRef.current += 1
@@ -1214,13 +1368,21 @@ export default function App() {
     ) {
       return
     }
+    const warnings: string[] = []
     beginBusy()
     try {
       await waitForEditorOperations()
       flushPendingHistory()
-      await flushAutosave(engine.snapshot(), revisionRef.current).catch(
-        () => undefined,
-      )
+      try {
+        await flushAutosave(engine.snapshot(), revisionRef.current)
+      } catch (error) {
+        warnings.push(
+          userFacingErrorMessage(
+            error,
+            '現在の編集内容を切り替え前に自動保存できませんでした。',
+          ),
+        )
+      }
       cancelPendingHistory()
       cancelPendingAutosave()
       autosaveGenerationRef.current += 1
@@ -1260,12 +1422,28 @@ export default function App() {
       setDocumentSize({ width, height })
       setActiveDialog(null)
       setFilters(DEFAULT_FILTERS)
-      await clearAutosaveForGeneration(generation).catch(() => undefined)
+      try {
+        await clearAutosaveForGeneration(generation)
+      } catch (error) {
+        warnings.push(
+          userFacingErrorMessage(
+            error,
+            '以前の自動保存データを削除できませんでした。',
+          ),
+        )
+      }
       fitCanvas()
-      setStatus({
-        kind: 'success',
-        message: '新しいキャンバスを作成しました。',
-      })
+      setStatus(
+        warnings.length > 0
+          ? {
+              kind: 'warning',
+              message: `新しいキャンバスを作成しました。${warnings.join(' ')}`,
+            }
+          : {
+              kind: 'success',
+              message: '新しいキャンバスを作成しました。',
+            },
+      )
     } catch (error) {
       setStatus({
         kind: 'error',
@@ -1282,12 +1460,20 @@ export default function App() {
   const restoreRecovery = useCallback(async () => {
     const project = recoveryRef.current
     if (!project) return
+    if (
+      dirtyRef.current &&
+      !window.confirm(
+        '現在の未保存の編集を閉じて、前回の自動保存データを復元しますか？',
+      )
+    ) {
+      return
+    }
     try {
+      await restoreSnapshot(projectToSnapshot(project))
       cancelPendingHistory()
       cancelPendingAutosave()
       autosaveGenerationRef.current += 1
       const generation = autosaveGenerationRef.current
-      await restoreSnapshot(projectToSnapshot(project))
       const snapshot = engineRef.current!.snapshot()
       latestSnapshotRef.current = snapshot
       revisionRef.current += 1
@@ -1337,7 +1523,15 @@ export default function App() {
       setAutosaveState('saving')
       void enqueueAutosave(engine.snapshot(), generation).catch(() => undefined)
     } else {
-      void clearAutosaveForGeneration(generation)
+      void clearAutosaveForGeneration(generation).catch((error: unknown) => {
+        setStatus({
+          kind: 'warning',
+          message: userFacingErrorMessage(
+            error,
+            '不要な自動保存データを削除できませんでした。',
+          ),
+        })
+      })
     }
   }, [cancelPendingAutosave, clearAutosaveForGeneration, enqueueAutosave])
 
@@ -1450,11 +1644,12 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (busyRef.current) return
       if (activeDialog && event.key === 'Escape') {
+        event.preventDefault()
         setActiveDialog(null)
         return
       }
+      if (busyRef.current) return
       if (isEditableTarget(event.target) || activeDialog) return
 
       const modifier = (event.metaKey || event.ctrlKey) && !event.altKey
@@ -1537,7 +1732,9 @@ export default function App() {
           '更新処理中も編集内容が変化しました。操作を止めてから再試行してください。',
         )
       }
+      updateInProgressRef.current = true
       if (!applyServiceWorkerUpdate()) {
+        updateInProgressRef.current = false
         endBusy()
         setStatus({
           kind: 'warning',
@@ -1547,6 +1744,7 @@ export default function App() {
       }
       updateTimeoutRef.current = window.setTimeout(() => {
         updateTimeoutRef.current = null
+        updateInProgressRef.current = false
         endBusy()
         setStatus({
           kind: 'warning',
@@ -1554,12 +1752,19 @@ export default function App() {
             'アプリの更新を完了できませんでした。編集内容は保持されています。しばらくしてから再試行してください。',
         })
       }, SERVICE_WORKER_UPDATE_TIMEOUT)
-    } catch {
+    } catch (error) {
+      updateInProgressRef.current = false
+      if (updateTimeoutRef.current !== null) {
+        window.clearTimeout(updateTimeoutRef.current)
+        updateTimeoutRef.current = null
+      }
       endBusy()
       setStatus({
         kind: 'error',
-        message:
+        message: userFacingErrorMessage(
+          error,
           '更新前に編集内容を自動保存できませんでした。プロジェクトを手動保存してください。',
+        ),
       })
     }
   }, [

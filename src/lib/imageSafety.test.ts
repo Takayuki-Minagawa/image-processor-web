@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_IMAGE_DIMENSION,
   MAX_IMAGE_PIXELS,
+  assertSafeImageDimensions,
   imageDimensionsAreSafe,
   imageDimensionsMatchHeader,
   matchEmbeddedImageDataUrl,
@@ -27,6 +28,20 @@ describe('image safety limits', () => {
         height: 1,
       }),
     ).toBe(false)
+  })
+
+  it('exposes a stable code for UI error handling', () => {
+    expect(() =>
+      assertSafeImageDimensions({
+        width: MAX_IMAGE_DIMENSION + 1,
+        height: 1,
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        name: 'ImageSafetyError',
+        code: 'image-dimension-limit',
+      }),
+    )
   })
 })
 

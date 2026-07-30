@@ -21,6 +21,30 @@ export const MAX_PROJECT_DECODE_PIXELS = 2 * MAX_IMAGE_PIXELS
 export const MAX_PROJECT_OBJECTS = 500
 export const MAX_PROJECT_JSON_NODES = 50_000
 
+export type ProjectValidationErrorCode =
+  | 'invalid-editor-snapshot'
+  | 'unsafe-project-data'
+  | 'project-structure-too-large'
+  | 'project-object-limit'
+  | 'image-byte-limit'
+  | 'image-dimension-limit'
+  | 'project-decode-limit'
+  | 'invalid-image-data'
+
+export class ProjectValidationError extends Error {
+  readonly code: ProjectValidationErrorCode
+
+  constructor(
+    code: ProjectValidationErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+    this.name = 'ProjectValidationError'
+    this.code = code
+  }
+}
+
 const UNSAFE_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 export { imageDimensionsMatchHeader } from '../lib/imageSafety'
 
@@ -29,14 +53,18 @@ export const inspectEmbeddedImageDataUrl = (
 ): { dimensions: ImageDimensions; decodedBytes: number } => {
   const metadata = matchEmbeddedImageDataUrl(dataUrl)
   if (!metadata) {
-    throw new TypeError(
+    throw new ProjectValidationError(
+      'invalid-image-data',
       'Projects may contain only embedded PNG, JPEG, or WebP images.',
     )
   }
 
   const encoded = dataUrl.slice(metadata.prefixLength)
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
-    throw new TypeError('The embedded image contains invalid Base64 data.')
+    throw new ProjectValidationError(
+      'invalid-image-data',
+      'The embedded image contains invalid Base64 data.',
+    )
   }
   const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
   const decodedBytes = Math.max(
@@ -44,7 +72,8 @@ export const inspectEmbeddedImageDataUrl = (
     Math.floor((encoded.length * 3) / 4) - padding,
   )
   if (decodedBytes <= 0 || decodedBytes > MAX_IMAGE_BYTES) {
-    throw new RangeError(
+    throw new ProjectValidationError(
+      'image-byte-limit',
       'Embedded images must be non-empty and no larger than 50 MB.',
     )
   }
@@ -55,23 +84,29 @@ export const inspectEmbeddedImageDataUrl = (
   )
   prefixLength -= prefixLength % 4
   if (prefixLength === 0) {
-    throw new TypeError('The embedded image header is incomplete.')
+    throw new ProjectValidationError(
+      'invalid-image-data',
+      'The embedded image header is incomplete.',
+    )
   }
 
   let decodedPrefix: string
   try {
     decodedPrefix = globalThis.atob(encoded.slice(0, prefixLength))
   } catch (error) {
-    throw new TypeError('The embedded image could not be decoded.', {
-      cause: error,
-    })
+    throw new ProjectValidationError(
+      'invalid-image-data',
+      'The embedded image could not be decoded.',
+      { cause: error },
+    )
   }
   const bytes = Uint8Array.from(decodedPrefix, (character) =>
     character.charCodeAt(0),
   )
   const dimensions = parseImageDimensions(bytes, metadata.mimeType)
   if (!dimensions) {
-    throw new TypeError(
+    throw new ProjectValidationError(
+      'invalid-image-data',
       'The embedded image dimensions could not be verified safely.',
     )
   }
@@ -98,7 +133,10 @@ const assertSafeRendererImageSources = (value: unknown): void => {
     visited.add(current)
     nodeCount += 1
     if (nodeCount > MAX_PROJECT_JSON_NODES) {
-      throw new RangeError('The project structure is too large to open safely.')
+      throw new ProjectValidationError(
+        'project-structure-too-large',
+        'The project structure is too large to open safely.',
+      )
     }
 
     if (Array.isArray(current)) {
@@ -108,16 +146,23 @@ const assertSafeRendererImageSources = (value: unknown): void => {
 
     Object.entries(current).forEach(([key, child]) => {
       if (UNSAFE_JSON_KEYS.has(key)) {
-        throw new TypeError(`Unsafe project key: ${key}`)
+        throw new ProjectValidationError(
+          'unsafe-project-data',
+          `Unsafe project key: ${key}`,
+        )
       }
       if (key === 'src') {
         if (typeof child !== 'string') {
-          throw new TypeError('Embedded image sources must be strings.')
+          throw new ProjectValidationError(
+            'unsafe-project-data',
+            'Embedded image sources must be strings.',
+          )
         }
         const { dimensions } = inspectEmbeddedImageDataUrl(child)
         totalDecodePixels += dimensions.width * dimensions.height
         if (totalDecodePixels > MAX_PROJECT_DECODE_PIXELS) {
-          throw new RangeError(
+          throw new ProjectValidationError(
+            'project-decode-limit',
             'The project exceeds the 128 MP embedded-image decode limit.',
           )
         }
@@ -145,16 +190,25 @@ export const assertRestorableEditorSnapshot = (
     !Number.isInteger(snapshot.width) ||
     !Number.isInteger(snapshot.height)
   ) {
-    throw new TypeError('Invalid editor snapshot.')
+    throw new ProjectValidationError(
+      'invalid-editor-snapshot',
+      'Invalid editor snapshot.',
+    )
   }
 
   const serializedObjects = snapshot.json.objects
+  if (serializedObjects !== undefined && !Array.isArray(serializedObjects)) {
+    throw new ProjectValidationError(
+      'invalid-editor-snapshot',
+      'The editor snapshot objects value must be an array.',
+    )
+  }
   if (
-    serializedObjects !== undefined &&
-    (!Array.isArray(serializedObjects) ||
-      serializedObjects.length > MAX_PROJECT_OBJECTS)
+    Array.isArray(serializedObjects) &&
+    serializedObjects.length > MAX_PROJECT_OBJECTS
   ) {
-    throw new RangeError(
+    throw new ProjectValidationError(
+      'project-object-limit',
       `Projects may contain at most ${MAX_PROJECT_OBJECTS} top-level objects.`,
     )
   }
@@ -165,7 +219,8 @@ export const assertRestorableEditorSnapshot = (
       height: snapshot.height,
     })
   ) {
-    throw new RangeError(
+    throw new ProjectValidationError(
+      'image-dimension-limit',
       'Project dimensions exceed the 8,192 px / 64 MP safety limit.',
     )
   }

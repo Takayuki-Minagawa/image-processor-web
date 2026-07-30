@@ -30,7 +30,7 @@ describe('assertRestorableEditorSnapshot', () => {
   })
 
   it('rejects a snapshot with more objects than restore can accept', () => {
-    expect(() =>
+    const validate = () =>
       assertRestorableEditorSnapshot({
         width: 1280,
         height: 720,
@@ -39,13 +39,17 @@ describe('assertRestorableEditorSnapshot', () => {
             type: 'Rect',
           })),
         },
-      }),
-    ).toThrow(`at most ${MAX_PROJECT_OBJECTS}`)
+      })
+
+    expect(validate).toThrow(`at most ${MAX_PROJECT_OBJECTS}`)
+    expect(validate).toThrow(
+      expect.objectContaining({ code: 'project-object-limit' }),
+    )
   })
 
   it('rejects aggregate embedded-image decode work above 128 MP', () => {
     const src = pngHeaderDataUrl(8192, 8192)
-    expect(() =>
+    const validate = () =>
       assertRestorableEditorSnapshot({
         width: 1280,
         height: 720,
@@ -55,20 +59,28 @@ describe('assertRestorableEditorSnapshot', () => {
             src,
           })),
         },
-      }),
-    ).toThrow('128 MP')
+      })
+
+    expect(validate).toThrow('128 MP')
+    expect(validate).toThrow(
+      expect.objectContaining({ code: 'project-decode-limit' }),
+    )
   })
 
   it('rejects non-embedded renderer image sources before persistence', () => {
-    expect(() =>
+    const validate = () =>
       assertRestorableEditorSnapshot({
         width: 1280,
         height: 720,
         json: {
           objects: [{ type: 'Image', src: 'https://example.com/image.png' }],
         },
-      }),
-    ).toThrow('embedded PNG, JPEG, or WebP')
+      })
+
+    expect(validate).toThrow('embedded PNG, JPEG, or WebP')
+    expect(validate).toThrow(
+      expect.objectContaining({ code: 'invalid-image-data' }),
+    )
   })
 })
 

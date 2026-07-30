@@ -6,6 +6,7 @@ export interface PwaState {
 const listeners = new Set<VoidFunction>()
 let registration: ServiceWorkerRegistration | null = null
 let waitingWorker: ServiceWorker | null = null
+const watchedWorkers = new WeakSet<ServiceWorker>()
 let started = false
 let refreshing = false
 let reloadOnControllerChange = false
@@ -26,14 +27,34 @@ const updateState = (update: Partial<PwaState>): void => {
   listeners.forEach((listener) => listener())
 }
 
+const clearWaitingWorker = (worker?: ServiceWorker): void => {
+  if (worker && waitingWorker !== worker) return
+  waitingWorker = null
+  updateState({ updateAvailable: false })
+}
+
 const watchWorker = (worker: ServiceWorker | null): void => {
-  if (!worker) return
-  worker.addEventListener('statechange', () => {
+  if (!worker || watchedWorkers.has(worker)) return
+  watchedWorkers.add(worker)
+
+  const handleStateChange = (): void => {
     if (worker.state === 'installed' && navigator.serviceWorker.controller) {
       waitingWorker = worker
       updateState({ updateAvailable: true })
+      return
     }
-  })
+
+    if (
+      worker.state === 'activating' ||
+      worker.state === 'activated' ||
+      worker.state === 'redundant'
+    ) {
+      clearWaitingWorker(worker)
+    }
+  }
+
+  worker.addEventListener('statechange', handleStateChange)
+  handleStateChange()
 }
 
 export function getPwaState(): PwaState {
@@ -52,6 +73,7 @@ export function startPwaRegistration(): void {
   started = true
 
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    clearWaitingWorker()
     if (!reloadOnControllerChange || refreshing) return
     refreshing = true
     window.location.reload()
@@ -63,11 +85,7 @@ export function startPwaRegistration(): void {
     })
     .then(async (nextRegistration) => {
       registration = nextRegistration
-      if (nextRegistration.waiting && navigator.serviceWorker.controller) {
-        waitingWorker = nextRegistration.waiting
-        updateState({ updateAvailable: true })
-      }
-
+      watchWorker(nextRegistration.waiting)
       watchWorker(nextRegistration.installing)
       nextRegistration.addEventListener('updatefound', () => {
         watchWorker(nextRegistration.installing)
@@ -83,7 +101,13 @@ export function startPwaRegistration(): void {
 
 export function applyServiceWorkerUpdate(): boolean {
   const worker = registration?.waiting ?? waitingWorker
-  if (!worker) return false
+  if (!worker || worker.state !== 'installed') {
+    if (worker && worker.state !== 'installed') {
+      clearWaitingWorker(worker)
+    }
+    return false
+  }
+
   reloadOnControllerChange = true
   worker.postMessage({ type: 'SKIP_WAITING' })
   return true

@@ -10,8 +10,10 @@ import {
   Rect,
   filters,
   iMatrix,
+  util,
 } from 'fabric'
 import {
+  ImageSafetyError,
   MAX_IMAGE_DIMENSION,
   assertSafeImageDimensions,
 } from '../lib/imageSafety'
@@ -160,6 +162,24 @@ type EditorObject = FabricObject & {
 
 type ClipboardObject = EditorObject
 
+type RestoredCanvasEnlivables = Pick<
+  Canvas,
+  'backgroundColor' | 'backgroundImage' | 'overlayColor' | 'overlayImage'
+>
+
+interface PreparedEditorRestore {
+  objects: FabricObject[]
+  enlivables: RestoredCanvasEnlivables
+  width: number
+  height: number
+}
+
+interface PreparedRestoreApplicationOptions {
+  onApplicationStart?: VoidFunction
+  selectedEditorIds?: ReadonlySet<string>
+  viewportTransform?: Canvas['viewportTransform']
+}
+
 const SERIALIZED_EDITOR_PROPERTIES = [
   'editorId',
   'editorName',
@@ -178,6 +198,10 @@ const DEFAULT_BRUSH_SIZE = 12
 const DEFAULT_BACKGROUND = 'transparent'
 const EPSILON = 0.000_001
 const MIN_VISIBLE_PASTE_PIXELS = 24
+const TOP_LEFT_ORIGIN = {
+  originX: 'left',
+  originY: 'top',
+} as const
 
 let fallbackIdCounter = 0
 
@@ -231,6 +255,7 @@ export class FabricEditorEngine {
   private restoreQueue: Promise<void> = Promise.resolve()
   private isExporting = false
   private readonly eventDisposers: VoidFunction[] = []
+  private readonly disposedResources = new WeakSet<object>()
 
   public constructor(
     element: HTMLCanvasElement,
@@ -289,7 +314,7 @@ export class FabricEditorEngine {
     this.disposed = true
     await this.restoreQueue.catch(() => undefined)
     this.eventDisposers.splice(0).forEach((dispose) => dispose())
-    this.clipboard = []
+    this.replaceClipboard([])
     await this.canvas.dispose()
   }
 
@@ -353,24 +378,29 @@ export class FabricEditorEngine {
     options: ImportImageOptions = {},
   ): Promise<string> {
     this.assertUsable()
+    let image: FabricImage | undefined
 
     try {
       const declared = inspectEmbeddedImageDataUrl(dataUrl).dimensions
-      const image = await FabricImage.fromURL(dataUrl)
+      const loadedImage = await FabricImage.fromURL(dataUrl)
+      image = loadedImage
+      this.assertUsable()
       assertSafeImageDimensions({
-        width: image.width,
-        height: image.height,
+        width: loadedImage.width,
+        height: loadedImage.height,
       })
       const matchesHeader = imageDimensionsMatchHeader(
-        { width: image.width, height: image.height },
+        { width: loadedImage.width, height: loadedImage.height },
         declared,
       )
       if (!matchesHeader) {
-        throw new TypeError(
+        throw new ImageSafetyError(
+          'image-dimension-mismatch',
           'The embedded image header does not match its decoded dimensions.',
         )
       }
-      const editorObject = image as EditorObject
+      const editorObject = loadedImage as EditorObject
+      this.normalizeObjectOrigin(editorObject)
       this.initializeEditorObject(
         editorObject,
         this.uniqueLayerName(name.trim() || 'Image'),
@@ -379,17 +409,20 @@ export class FabricEditorEngine {
       const canvasWasEmpty = this.canvas.getObjects().length === 0
       const resizeCanvas =
         options.resizeCanvasIfEmpty === true && canvasWasEmpty
-      const canvasWidth = resizeCanvas ? image.width : this.documentWidth
-      const canvasHeight = resizeCanvas ? image.height : this.documentHeight
-      const imageWidth = Math.max(image.width, 1)
-      const imageHeight = Math.max(image.height, 1)
+      const canvasWidth = resizeCanvas ? loadedImage.width : this.documentWidth
+      const canvasHeight = resizeCanvas
+        ? loadedImage.height
+        : this.documentHeight
+      const imageWidth = Math.max(loadedImage.width, 1)
+      const imageHeight = Math.max(loadedImage.height, 1)
       const placementMargin = canvasWasEmpty ? 1 : 0.9
       const scale = Math.min(
         1,
         (canvasWidth * placementMargin) / imageWidth,
         (canvasHeight * placementMargin) / imageHeight,
       )
-      image.set({
+      loadedImage.set({
+        ...TOP_LEFT_ORIGIN,
         left: (canvasWidth - imageWidth * scale) / 2,
         top: (canvasHeight - imageHeight * scale) / 2,
         scaleX: scale,
@@ -402,12 +435,15 @@ export class FabricEditorEngine {
           this.documentHeight = documentDimension(canvasHeight)
           this.setDocumentClip()
         }
-        this.canvas.add(image)
-        this.canvas.setActiveObject(image)
+        this.canvas.add(loadedImage)
+        this.canvas.setActiveObject(loadedImage)
       })
       this.emitStatus('画像を読み込みました。', 'success')
       return this.requireEditorId(editorObject)
     } catch (error) {
+      if (image) {
+        this.disposeResources([image], this.canvas.getObjects())
+      }
       if (!isAbortLikeError(error)) {
         this.emitStatus('画像を読み込めませんでした。', 'error')
       }
@@ -420,6 +456,7 @@ export class FabricEditorEngine {
     const width = Math.max(1, finiteOr(options.width, 240))
     const height = Math.max(1, finiteOr(options.height, 160))
     const rect = new Rect({
+      ...TOP_LEFT_ORIGIN,
       left: finiteOr(options.left, (this.documentWidth - width) / 2),
       top: finiteOr(options.top, (this.documentHeight - height) / 2),
       width,
@@ -443,6 +480,7 @@ export class FabricEditorEngine {
     const width = Math.max(1, finiteOr(options.width, 220))
     const height = Math.max(1, finiteOr(options.height, 160))
     const ellipse = new Ellipse({
+      ...TOP_LEFT_ORIGIN,
       left: finiteOr(options.left, (this.documentWidth - width) / 2),
       top: finiteOr(options.top, (this.documentHeight - height) / 2),
       rx: width / 2,
@@ -463,6 +501,7 @@ export class FabricEditorEngine {
     this.assertUsable()
     const value = text.length > 0 ? text : 'Text'
     const textObject = new IText(value, {
+      ...TOP_LEFT_ORIGIN,
       left: finiteOr(options.left, this.documentWidth / 2 - 80),
       top: finiteOr(options.top, this.documentHeight / 2 - 24),
       fill: options.fill ?? '#111827',
@@ -500,17 +539,23 @@ export class FabricEditorEngine {
     }
 
     const clones = await this.cloneObjects(source)
-    const reservedNames = this.layerNames()
-    clones.forEach((clone) => {
-      this.preparePastedObject(clone, offset, reservedNames)
-    })
+    try {
+      this.assertUsable()
+      const reservedNames = this.layerNames()
+      clones.forEach((clone) => {
+        this.preparePastedObject(clone, offset, reservedNames)
+      })
 
-    this.mutate('duplicate', () => {
-      this.canvas.discardActiveObject()
-      this.canvas.add(...clones)
-      this.activateObjects(clones)
-    })
-    return clones.map((clone) => this.requireEditorId(clone))
+      this.mutate('duplicate', () => {
+        this.canvas.discardActiveObject()
+        this.canvas.add(...clones)
+        this.activateObjects(clones)
+      })
+      return clones.map((clone) => this.requireEditorId(clone))
+    } catch (error) {
+      this.disposeResources(clones, this.canvas.getObjects())
+      throw error
+    }
   }
 
   public getLayers(): LayerInfo[] {
@@ -1054,15 +1099,40 @@ export class FabricEditorEngine {
     const queued = this.restoreQueue
       .catch(() => undefined)
       .then(async () => {
-        const rollback = this.snapshot()
+        assertRestorableEditorSnapshot(snapshot)
+        const prepared = await this.prepareRestore(snapshot)
+        let applicationStarted = false
         try {
-          await this.performRestore(snapshot)
-        } catch (error) {
+          const rollback = this.snapshot()
+          const rollbackSelectedIds = new Set(this.getSelectedLayerIds())
+          const rollbackViewportTransform = [
+            ...this.canvas.viewportTransform,
+          ] as Canvas['viewportTransform']
           try {
-            await this.performRestore(rollback)
-          } catch {
-            // Preserve the original error. A second failure is non-actionable
-            // and the render flags/clip are still repaired in performRestore.
+            this.applyPreparedRestore(prepared, {
+              onApplicationStart: () => {
+                applicationStarted = true
+              },
+            })
+          } catch (error) {
+            if (applicationStarted) {
+              try {
+                const preparedRollback = await this.prepareRestore(rollback)
+                this.applyPreparedRestore(preparedRollback, {
+                  selectedEditorIds: rollbackSelectedIds,
+                  viewportTransform: rollbackViewportTransform,
+                })
+                this.disposePreparedRestore(prepared)
+              } catch {
+                // Preserve the original error. The canvas may own part of the
+                // incoming restore when rollback also fails, so do not dispose it.
+              }
+            }
+            throw error
+          }
+        } catch (error) {
+          if (!applicationStarted) {
+            this.disposePreparedRestore(prepared)
           }
           throw error
         }
@@ -1130,8 +1200,12 @@ export class FabricEditorEngine {
     if (selected.length === 0) {
       return false
     }
-    this.clipboard = await this.cloneObjects(selected)
-    this.pasteGeneration = 0
+    const clones = await this.cloneObjects(selected)
+    if (this.disposed) {
+      this.disposeObjects(clones)
+      this.assertUsable()
+    }
+    this.replaceClipboard(clones)
     this.emitStatus('選択範囲をコピーしました。', 'info')
     return true
   }
@@ -1143,25 +1217,37 @@ export class FabricEditorEngine {
       return false
     }
 
-    this.clipboard = await this.cloneObjects(selected)
-    this.pasteGeneration = 0
+    const clones = await this.cloneObjects(selected)
+    if (this.disposed) {
+      this.disposeObjects(clones)
+      this.assertUsable()
+    }
     const selectedSet = new Set(selected)
     const objectsOnCanvas = new Set(this.canvas.getObjects())
     const objectsToRemove = selected.filter((object) =>
       objectsOnCanvas.has(object),
     )
     if (objectsToRemove.length === 0) {
+      this.disposeObjects(clones)
       return false
     }
 
-    this.mutate('cut', () => {
-      if (
-        this.canvas.getActiveObjects().some((object) => selectedSet.has(object))
-      ) {
-        this.canvas.discardActiveObject()
-      }
-      this.canvas.remove(...objectsToRemove)
-    })
+    try {
+      this.mutate('cut', () => {
+        if (
+          this.canvas
+            .getActiveObjects()
+            .some((object) => selectedSet.has(object))
+        ) {
+          this.canvas.discardActiveObject()
+        }
+        this.canvas.remove(...objectsToRemove)
+      })
+    } catch (error) {
+      this.disposeObjects(clones)
+      throw error
+    }
+    this.replaceClipboard(clones)
     this.emitStatus('選択範囲を切り取りました。', 'info')
     return true
   }
@@ -1172,42 +1258,56 @@ export class FabricEditorEngine {
       return []
     }
     const clones = await this.cloneObjects(this.clipboard)
-    const appliedOffset = this.nextPasteOffset(clones, offset)
-    const reservedNames = this.layerNames()
-    clones.forEach((clone) => {
-      this.preparePastedObject(clone, appliedOffset, reservedNames)
-    })
+    try {
+      this.assertUsable()
+      const appliedOffset = this.nextPasteOffset(clones, offset)
+      const reservedNames = this.layerNames()
+      clones.forEach((clone) => {
+        this.preparePastedObject(clone, appliedOffset, reservedNames)
+      })
 
-    this.mutate('paste', () => {
-      this.canvas.discardActiveObject()
-      this.canvas.add(...clones)
-      this.activateObjects(clones)
-    })
-    return clones.map((clone) => this.requireEditorId(clone))
+      this.mutate('paste', () => {
+        this.canvas.discardActiveObject()
+        this.canvas.add(...clones)
+        this.activateObjects(clones)
+      })
+      return clones.map((clone) => this.requireEditorId(clone))
+    } catch (error) {
+      this.disposeResources(clones, this.canvas.getObjects())
+      throw error
+    }
   }
 
   private bindEvents(): void {
     this.eventDisposers.push(
       this.canvas.on('object:added', ({ target }) => {
-        const object = this.normalizeEditorObject(target)
-        if (
-          this.currentTool === 'eraser' &&
+        const drawingPath =
+          this.eventSuppressionDepth === 0 &&
           this.canvas.isDrawingMode &&
+          target.type === 'path'
+        const object = target as EditorObject
+        if (drawingPath) {
+          this.normalizeObjectOrigin(object, true)
+        }
+        if (
+          drawingPath &&
+          this.currentTool === 'eraser' &&
           object.type === 'path'
         ) {
           object.set({
             globalCompositeOperation: 'destination-out',
             opacity: this.brushOpacity,
           })
-          object.editorName = this.uniqueLayerName('Eraser stroke')
+          object.editorName ||= this.uniqueLayerName('Eraser stroke')
         } else if (
+          drawingPath &&
           this.currentTool === 'brush' &&
-          this.canvas.isDrawingMode &&
           object.type === 'path'
         ) {
           object.set('opacity', this.brushOpacity)
-          object.editorName = this.uniqueLayerName('Brush stroke')
+          object.editorName ||= this.uniqueLayerName('Brush stroke')
         }
+        this.normalizeEditorObject(object)
         this.handleDocumentEvent('object-added')
       }),
       this.canvas.on('object:removed', () => {
@@ -1346,6 +1446,7 @@ export class FabricEditorEngine {
   }
 
   private initializeEditorObject(object: EditorObject, name: string): void {
+    this.normalizeObjectOrigin(object)
     object.editorId = object.editorId || createEditorId()
     object.editorName = object.editorName || name
     object.editorLocked = Boolean(object.editorLocked)
@@ -1354,6 +1455,7 @@ export class FabricEditorEngine {
 
   private normalizeEditorObject(object: FabricObject): EditorObject {
     const editorObject = object as EditorObject
+    this.normalizeObjectOrigin(editorObject)
     if (!editorObject.editorId) {
       editorObject.editorId = createEditorId()
     }
@@ -1410,10 +1512,13 @@ export class FabricEditorEngine {
   }
 
   private findLayer(id: string): EditorObject | undefined {
-    return this.canvas
-      .getObjects()
-      .map((object) => this.normalizeEditorObject(object))
-      .find((object) => object.editorId === id)
+    for (const object of this.canvas.getObjects()) {
+      const editorObject = this.normalizeEditorObject(object)
+      if (editorObject.editorId === id) {
+        return editorObject
+      }
+    }
+    return undefined
   }
 
   private moveLayerWith(
@@ -1444,28 +1549,47 @@ export class FabricEditorEngine {
       objects.some((object) => object.group === activeObject)
 
     if (needsTemporaryUngroup) {
-      this.eventSuppressionDepth += 1
-      this.canvas.discardActiveObject()
+      this.withSuppressedEvents(() => {
+        this.canvas.discardActiveObject()
+      })
     }
     try {
-      return await Promise.all(
+      const results = await Promise.allSettled(
         objects.map(async (object) => {
-          const clone = (await object.clone([
+          return (await object.clone([
             ...SERIALIZED_EDITOR_PROPERTIES,
           ])) as ClipboardObject
-          return this.normalizeEditorObject(clone)
         }),
       )
+      const clones = results.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      )
+      const failure = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )
+      if (failure) {
+        this.disposeObjects(clones)
+        throw failure.reason
+      }
+      return clones
     } finally {
-      if (needsTemporaryUngroup) {
-        try {
-          if (!this.canvas.getActiveObject()) {
+      if (needsTemporaryUngroup && !this.disposed) {
+        this.withSuppressedEvents(() => {
+          const currentObjects = new Set(this.canvas.getObjects())
+          const selectionCanBeRestored =
+            this.currentTool === 'select' &&
+            objects.every(
+              (object) =>
+                currentObjects.has(object) &&
+                object.visible &&
+                object.selectable,
+            )
+          if (!this.canvas.getActiveObject() && selectionCanBeRestored) {
             this.activateObjects(objects)
           }
           this.canvas.requestRenderAll()
-        } finally {
-          this.eventSuppressionDepth -= 1
-        }
+        })
       }
     }
   }
@@ -1537,44 +1661,200 @@ export class FabricEditorEngine {
     return step * this.pasteGeneration
   }
 
-  private async performRestore(snapshot: EditorSnapshot): Promise<void> {
-    assertRestorableEditorSnapshot(snapshot)
+  private async prepareRestore(
+    snapshot: EditorSnapshot,
+  ): Promise<PreparedEditorRestore> {
+    const serializedObjects = Array.isArray(snapshot.json.objects)
+      ? snapshot.json.objects
+      : []
+    const restoredNames = new Set<string>()
+    const [objectsResult, enlivablesResult] = await Promise.allSettled([
+      util.enlivenObjects<FabricObject>(serializedObjects, {
+        reviver: (serialized, object, error) => {
+          if (error) {
+            throw error
+          }
+          if (!(object instanceof FabricObject)) {
+            throw new TypeError('The project contains an invalid layer.')
+          }
+          const editorObject = object as EditorObject
+          const record = serialized as Record<string, unknown>
+          // Pixelweave v1 stored left/top as logical top-left coordinates even
+          // though Fabric 7 rendered center-origin objects with an offset. Keep
+          // those serialized coordinates and repair the origin on restore.
+          this.normalizeObjectOrigin(editorObject)
+          editorObject.editorId =
+            typeof record.editorId === 'string' && record.editorId
+              ? record.editorId
+              : createEditorId()
+          const serializedName =
+            typeof record.editorName === 'string'
+              ? record.editorName.trim()
+              : ''
+          editorObject.editorName = this.uniqueLayerName(
+            serializedName || this.defaultNameForObject(editorObject),
+            restoredNames,
+          )
+          editorObject.editorLocked = Boolean(record.editorLocked)
+        },
+      }),
+      util.enlivenObjectEnlivables<RestoredCanvasEnlivables>({
+        backgroundImage: snapshot.json.backgroundImage,
+        backgroundColor: snapshot.json.background,
+        overlayImage: snapshot.json.overlayImage,
+        overlayColor: snapshot.json.overlay,
+      }),
+    ])
 
+    if (
+      objectsResult.status === 'rejected' ||
+      enlivablesResult.status === 'rejected'
+    ) {
+      if (objectsResult.status === 'fulfilled') {
+        this.disposeObjects(objectsResult.value)
+      }
+      if (enlivablesResult.status === 'fulfilled') {
+        this.disposeCanvasEnlivables(enlivablesResult.value)
+      }
+      if (objectsResult.status === 'rejected') {
+        throw objectsResult.reason
+      }
+      if (enlivablesResult.status === 'rejected') {
+        throw enlivablesResult.reason
+      }
+    }
+
+    return {
+      objects: objectsResult.value,
+      enlivables: enlivablesResult.value,
+      width: documentDimension(snapshot.width),
+      height: documentDimension(snapshot.height),
+    }
+  }
+
+  private applyPreparedRestore(
+    prepared: PreparedEditorRestore,
+    options: PreparedRestoreApplicationOptions = {},
+  ): void {
+    const replacedResources = this.canvasOwnedResources()
     this.eventSuppressionDepth += 1
     const previousRenderOnAddRemove = this.canvas.renderOnAddRemove
     try {
-      this.canvas.discardActiveObject()
-      await this.canvas.loadFromJSON(snapshot.json, (serialized, object) => {
-        if (!object) {
-          return
-        }
-        const editorObject = object as EditorObject
-        const record = serialized as Record<string, unknown>
-        editorObject.editorId =
-          typeof record.editorId === 'string'
-            ? record.editorId
-            : createEditorId()
-        editorObject.editorName =
-          typeof record.editorName === 'string'
-            ? record.editorName
-            : this.defaultNameForObject(editorObject)
-        editorObject.editorLocked = Boolean(record.editorLocked)
-      })
-      this.documentWidth = documentDimension(snapshot.width)
-      this.documentHeight = documentDimension(snapshot.height)
+      this.canvas.renderOnAddRemove = false
+      options.onApplicationStart?.()
+      this.canvas.clear()
+      this.canvas.add(...prepared.objects)
+      this.canvas.set(prepared.enlivables)
+      this.documentWidth = prepared.width
+      this.documentHeight = prepared.height
       this.setDocumentClip()
-      this.canvas.setViewportTransform([...iMatrix])
+      this.canvas.setViewportTransform(
+        options.viewportTransform ?? [...iMatrix],
+      )
       this.configureObjectInteractivity()
+      if (options.selectedEditorIds?.size) {
+        this.activateObjects(
+          prepared.objects.filter((object) =>
+            options.selectedEditorIds?.has(
+              this.requireEditorId(object as EditorObject),
+            ),
+          ),
+        )
+      }
       this.canvas.requestRenderAll()
     } finally {
       this.canvas.renderOnAddRemove = previousRenderOnAddRemove
-      this.setDocumentClip()
       this.eventSuppressionDepth -= 1
+      this.disposeResources(replacedResources, this.canvasOwnedResources())
     }
 
     this.emitLayers()
     this.emitSelection()
     this.emitZoom()
+  }
+
+  private normalizeObjectOrigin(
+    object: FabricObject,
+    preserveVisualPosition = false,
+  ): void {
+    if (object.originX === 'left' && object.originY === 'top') {
+      return
+    }
+
+    if (preserveVisualPosition) {
+      const position = object.getPositionByOrigin('left', 'top')
+      object.set({
+        ...TOP_LEFT_ORIGIN,
+        left: position.x,
+        top: position.y,
+      })
+    } else {
+      object.set(TOP_LEFT_ORIGIN)
+    }
+    object.setCoords()
+  }
+
+  private replaceClipboard(objects: ClipboardObject[]): void {
+    const previous = this.clipboard
+    this.clipboard = objects
+    this.pasteGeneration = 0
+    this.disposeObjects(previous)
+  }
+
+  private disposePreparedRestore(prepared: PreparedEditorRestore): void {
+    this.disposeResources([
+      ...prepared.objects,
+      ...Object.values(prepared.enlivables),
+    ])
+  }
+
+  private disposeCanvasEnlivables(enlivables: RestoredCanvasEnlivables): void {
+    this.disposeResources(Object.values(enlivables))
+  }
+
+  private disposeObjects(objects: FabricObject[]): void {
+    this.disposeResources(objects)
+  }
+
+  private canvasOwnedResources(): unknown[] {
+    return [
+      ...this.canvas.getObjects(),
+      this.canvas.backgroundImage,
+      this.canvas.backgroundColor,
+      this.canvas.overlayImage,
+      this.canvas.overlayColor,
+      this.canvas.clipPath,
+    ]
+  }
+
+  private disposeResources(
+    resources: Iterable<unknown>,
+    retainedResources: Iterable<unknown> = [],
+  ): void {
+    const retained = new Set(retainedResources)
+    const disposedInCall = new Set<unknown>()
+    for (const resource of resources) {
+      const disposable = resource as { dispose?: VoidFunction }
+      if (
+        !resource ||
+        retained.has(resource) ||
+        disposedInCall.has(resource) ||
+        typeof disposable.dispose !== 'function'
+      ) {
+        continue
+      }
+      const identity = resource as object
+      if (this.disposedResources.has(identity)) {
+        continue
+      }
+      disposedInCall.add(resource)
+      this.disposedResources.add(identity)
+      try {
+        disposable.dispose()
+      } catch {
+        // Disposal is best-effort and must not hide the operation's result.
+      }
+    }
   }
 
   private mutate(reason: EditorChangeReason, mutation: () => void): void {
@@ -1680,7 +1960,9 @@ export class FabricEditorEngine {
       return 'Text'
     }
     if (object.type === 'path') {
-      return 'Brush stroke'
+      return object.globalCompositeOperation === 'destination-out'
+        ? 'Eraser stroke'
+        : 'Brush stroke'
     }
     return 'Layer'
   }
