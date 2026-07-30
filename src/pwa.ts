@@ -29,10 +29,7 @@ const updateState = (update: Partial<PwaState>): void => {
 const watchWorker = (worker: ServiceWorker | null): void => {
   if (!worker) return
   worker.addEventListener('statechange', () => {
-    if (
-      worker.state === 'installed' &&
-      navigator.serviceWorker.controller
-    ) {
+    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
       waitingWorker = worker
       updateState({ updateAvailable: true })
     }
@@ -49,11 +46,7 @@ export function subscribePwaState(listener: VoidFunction): VoidFunction {
 }
 
 export function startPwaRegistration(): void {
-  if (
-    started ||
-    !import.meta.env.PROD ||
-    !('serviceWorker' in navigator)
-  ) {
+  if (started || !import.meta.env.PROD || !('serviceWorker' in navigator)) {
     return
   }
   started = true
@@ -70,10 +63,7 @@ export function startPwaRegistration(): void {
     })
     .then(async (nextRegistration) => {
       registration = nextRegistration
-      if (
-        nextRegistration.waiting &&
-        navigator.serviceWorker.controller
-      ) {
+      if (nextRegistration.waiting && navigator.serviceWorker.controller) {
         waitingWorker = nextRegistration.waiting
         updateState({ updateAvailable: true })
       }

@@ -12,7 +12,7 @@ export interface HistoryOptions<T> {
 const structuralEqual = (
   left: unknown,
   right: unknown,
-  visited: WeakMap<object, object>,
+  visited: WeakMap<object, WeakSet<object>>,
 ): boolean => {
   if (Object.is(left, right)) {
     return true
@@ -27,11 +27,15 @@ const structuralEqual = (
     return false
   }
 
-  const priorMatch = visited.get(left)
-  if (priorMatch !== undefined) {
-    return priorMatch === right
+  const priorMatches = visited.get(left)
+  if (priorMatches?.has(right)) {
+    return true
   }
-  visited.set(left, right)
+  if (priorMatches) {
+    priorMatches.add(right)
+  } else {
+    visited.set(left, new WeakSet([right]))
+  }
 
   if (left instanceof Date || right instanceof Date) {
     return (

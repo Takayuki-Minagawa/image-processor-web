@@ -7,15 +7,16 @@ import type { ProjectDocument } from './types'
 
 export type AutosaveBackend = 'opfs' | 'localStorage'
 
-export type AutosaveErrorCode =
-  | 'save-failed'
-  | 'load-failed'
-  | 'clear-failed'
+export type AutosaveErrorCode = 'save-failed' | 'load-failed' | 'clear-failed'
 
 export class AutosaveError extends Error {
   readonly code: AutosaveErrorCode
 
-  constructor(code: AutosaveErrorCode, message: string, options?: ErrorOptions) {
+  constructor(
+    code: AutosaveErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
     super(message, options)
     this.name = 'AutosaveError'
     this.code = code
@@ -144,8 +145,7 @@ export class BrowserAutosaveRepository implements AutosaveRepository {
 
   constructor(options: BrowserAutosaveRepositoryOptions = {}) {
     this.#fileName = options.fileName ?? 'autosave.image-processor-web.json'
-    this.#storageKey =
-      options.storageKey ?? 'image-processor-web:autosave:v1'
+    this.#storageKey = options.storageKey ?? 'image-processor-web:autosave:v1'
     this.#getOpfsRoot =
       options.getOpfsRoot === undefined
         ? defaultOpfsProvider()

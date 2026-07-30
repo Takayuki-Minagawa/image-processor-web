@@ -9,14 +9,14 @@
 
 この文書は当初、2〜3名・11〜16週間を想定した完全なMVP計画として作成した。今回の実装では、GitHub Pagesで実際に評価できる垂直スライスを完了条件とし、Phase 1〜3の主要フローとPhase 4の安全性・アクセシビリティ基礎まで実装した。Worker、タイルレンダラー、ピクセル選択、全ブラウザ実機監査など、計測や専用開発期間が必要な項目は未実装のまま明示している。
 
-| 項目 | 結果 |
-|---|---|
-| Git運用 | `main`の初期計画コミットから`agent/image-editor-mvp`を作成し、実装完了後にPR化 |
-| 製品 | React / TypeScript / Fabric.jsによるlocal-first画像編集MVP |
-| 保存 | version 1プロジェクト、File System Access、download fallback、世代管理付きOPFS/localStorage自動保存 |
-| 配布 | GitHub Pages用サブパスビルド、原子的PWA precache、オフライン起動、保存後の更新切替 |
-| 品質 | unit、Chromium E2E、axe、strict build、依存監査、画像デコード前制限 |
-| 意図的な後続 | Worker/OffscreenCanvas、タイル差分、ピクセル選択、PSD/XCF、全ブラウザ/支援技術実機監査 |
+| 項目         | 結果                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| Git運用      | `main`の初期計画コミットから`agent/image-editor-mvp`を作成し、実装完了後にPR化                      |
+| 製品         | React / TypeScript / Fabric.jsによるlocal-first画像編集MVP                                          |
+| 保存         | version 1プロジェクト、File System Access、download fallback、世代管理付きOPFS/localStorage自動保存 |
+| 配布         | GitHub Pages用サブパスビルド、原子的PWA precache、オフライン起動、保存後の更新切替                  |
+| 品質         | unit、Chromium E2E、axe、strict build、依存監査、画像デコード前制限                                 |
+| 意図的な後続 | Worker/OffscreenCanvas、タイル差分、ピクセル選択、PSD/XCF、全ブラウザ/支援技術実機監査              |
 
 ## 1. 結論
 
@@ -31,16 +31,16 @@
 
 暫定技術構成は以下とする。
 
-| 領域 | 暫定方針 |
-|---|---|
-| UI | React + TypeScript + Vite。メニュー、ツールバー、レイヤーパネル、設定UIはDOMで実装 |
-| ドキュメント | ライブラリ非依存の `EditorDocument` を唯一の正本にする |
-| 編集操作 | CommandパターンとトランザクションでUndo/Redoを管理 |
-| 描画 | [Fabric.js](https://fabricjs.com/docs/core-concepts/)を第一候補、[Konva](https://konvajs.org/docs/overview.html)を比較候補 |
-| 画素処理 | Web Worker + [OffscreenCanvas](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas)。必要な機能だけOpenCV.js等を遅延ロード |
-| 保存 | OPFSに自動保存、File System Access APIは機能検出して利用、非対応環境はBlobダウンロード |
-| GPU | MVPの必須条件にしない。必要ならWebGL経路を追加し、WebGPUは後期実験とする |
-| バックエンド | MVPでは不要。同期・共同編集・AI処理を追加するときに再検討 |
+| 領域         | 暫定方針                                                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| UI           | React + TypeScript + Vite。メニュー、ツールバー、レイヤーパネル、設定UIはDOMで実装                                                      |
+| ドキュメント | ライブラリ非依存の `EditorDocument` を唯一の正本にする                                                                                  |
+| 編集操作     | CommandパターンとトランザクションでUndo/Redoを管理                                                                                      |
+| 描画         | [Fabric.js](https://fabricjs.com/docs/core-concepts/)を第一候補、[Konva](https://konvajs.org/docs/overview.html)を比較候補              |
+| 画素処理     | Web Worker + [OffscreenCanvas](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas)。必要な機能だけOpenCV.js等を遅延ロード |
+| 保存         | OPFSに自動保存、File System Access APIは機能検出して利用、非対応環境はBlobダウンロード                                                  |
+| GPU          | MVPの必須条件にしない。必要ならWebGL経路を追加し、WebGPUは後期実験とする                                                                |
+| バックエンド | MVPでは不要。同期・共同編集・AI処理を追加するときに再検討                                                                               |
 
 最重要の設計判断は、CanvasやFabric/KonvaのJSONをアプリの正本にしないことである。文書モデル、履歴、保存形式を描画ライブラリから分離し、性能上必要になった場合にレンダラーを交換できる構造にする。
 
@@ -62,25 +62,25 @@
 
 ### 3.1 製品・UXのベンチマーク
 
-| 参考先 | 参考にする点 | 取り扱い |
-|---|---|---|
-| [Photopea](https://www.photopea.com/) | ローカル処理、PSD中心の文書管理、複数ドキュメント、Photoshopに近いパネル・ショートカット・保存導線 | 製品・UXベンチマークのみ。[公式GitHub](https://github.com/photopea/photopea)にも本体ソースは公開されていないため、コード流用先にしない |
-| [Photopea: Opening and Saving](https://www.photopea.com/learn/opening-saving) | 開く、ドラッグ&ドロップ、貼り付け、編集可能形式と配布形式を分ける考え方 | 独自プロジェクト形式とフラット画像書き出しを分離する根拠にする |
-| [Photopea: Privacy](https://www.photopea.com/privacy.html) | 画像を端末内で処理するという明快なプライバシー説明 | 本アプリにも「画像を送信しないモード」と保存先説明を設ける |
-| [GIMP 3 Documentation](https://docs.gimp.org/3.0/en_GB/gimp-help-index.html) | レイヤー、グループ、マスク、選択チャンネル、ツールオプション、履歴の機能分類 | 機能用語と受け入れ条件の参考。GPLコードや資産は直接流用しない |
+| 参考先                                                                        | 参考にする点                                                                                       | 取り扱い                                                                                                                               |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| [Photopea](https://www.photopea.com/)                                         | ローカル処理、PSD中心の文書管理、複数ドキュメント、Photoshopに近いパネル・ショートカット・保存導線 | 製品・UXベンチマークのみ。[公式GitHub](https://github.com/photopea/photopea)にも本体ソースは公開されていないため、コード流用先にしない |
+| [Photopea: Opening and Saving](https://www.photopea.com/learn/opening-saving) | 開く、ドラッグ&ドロップ、貼り付け、編集可能形式と配布形式を分ける考え方                            | 独自プロジェクト形式とフラット画像書き出しを分離する根拠にする                                                                         |
+| [Photopea: Privacy](https://www.photopea.com/privacy.html)                    | 画像を端末内で処理するという明快なプライバシー説明                                                 | 本アプリにも「画像を送信しないモード」と保存先説明を設ける                                                                             |
+| [GIMP 3 Documentation](https://docs.gimp.org/3.0/en_GB/gimp-help-index.html)  | レイヤー、グループ、マスク、選択チャンネル、ツールオプション、履歴の機能分類                       | 機能用語と受け入れ条件の参考。GPLコードや資産は直接流用しない                                                                          |
 
 ### 3.2 ブラウザ基盤
 
-| 技術 | 調査で確認したこと | 計画への反映 |
-|---|---|---|
-| [Canvas API](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API) | 画像合成、パス、テキスト、ピクセル操作の基本。大きさ・メモリ上限は環境依存 | 一枚の巨大Canvasと全画像コピーに依存せず、将来のタイル化を前提にする |
-| [OffscreenCanvas](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas) | Worker内でCanvas処理を実行でき、メインスレッド負荷を分離できる | フィルター、サムネイル、エクスポート、チェックポイント生成をWorkerへ移す |
-| [Transferable objects](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects) | `ArrayBuffer`、`ImageBitmap`、`OffscreenCanvas`等をコピーせず移動できる | Worker間で巨大RGBA配列を複製しない。転送後の所有権を明確化する |
-| [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) | 高性能なオリジン専用保存領域。Worker内では同期アクセスも利用可能 | 自動保存、履歴チェックポイント、クラッシュ復旧用に使う。ユーザーの正本とはみなさない |
-| [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API) | 直接開く・保存するAPIがあるが、一部機能は全主要ブラウザ共通ではない | progressive enhancementとし、`<input type=file>`とBlobダウンロードを必須経路にする |
-| [Canvas CORS制約](https://developer.mozilla.org/en-US/docs/Web/HTML/How_to/CORS_enabled_image) | CORS許可のない外部画像を描くとCanvasがtaintされ、画素読出し・保存が失敗する | MVPでは外部URL読込を無効化するか、CORS対応fetch→Blobだけに限定する |
-| [Canvasの色空間](https://developer.mozilla.org/en-US/docs/Web/API/ImageData/colorSpace) | sRGB / Display-P3指定は存在するが一部機能はLimited availability | MVPはsRGB・8bitに固定。Display-P3、float16、ICC、CMYKは後段へ分離 |
-| [WCAG 2.2](https://www.w3.org/WAI/standards-guidelines/wcag/) | キーボード操作、フォーカス、ドラッグ代替、状態通知等が必要 | Canvas外のDOM UIを主要操作面とし、WCAG 2.2 AAをUIの目標にする |
+| 技術                                                                                                          | 調査で確認したこと                                                          | 計画への反映                                                                         |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [Canvas API](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)                                     | 画像合成、パス、テキスト、ピクセル操作の基本。大きさ・メモリ上限は環境依存  | 一枚の巨大Canvasと全画像コピーに依存せず、将来のタイル化を前提にする                 |
+| [OffscreenCanvas](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas)                           | Worker内でCanvas処理を実行でき、メインスレッド負荷を分離できる              | フィルター、サムネイル、エクスポート、チェックポイント生成をWorkerへ移す             |
+| [Transferable objects](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects) | `ArrayBuffer`、`ImageBitmap`、`OffscreenCanvas`等をコピーせず移動できる     | Worker間で巨大RGBA配列を複製しない。転送後の所有権を明確化する                       |
+| [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)           | 高性能なオリジン専用保存領域。Worker内では同期アクセスも利用可能            | 自動保存、履歴チェックポイント、クラッシュ復旧用に使う。ユーザーの正本とはみなさない |
+| [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API)                    | 直接開く・保存するAPIがあるが、一部機能は全主要ブラウザ共通ではない         | progressive enhancementとし、`<input type=file>`とBlobダウンロードを必須経路にする   |
+| [Canvas CORS制約](https://developer.mozilla.org/en-US/docs/Web/HTML/How_to/CORS_enabled_image)                | CORS許可のない外部画像を描くとCanvasがtaintされ、画素読出し・保存が失敗する | MVPでは外部URL読込を無効化するか、CORS対応fetch→Blobだけに限定する                   |
+| [Canvasの色空間](https://developer.mozilla.org/en-US/docs/Web/API/ImageData/colorSpace)                       | sRGB / Display-P3指定は存在するが一部機能はLimited availability             | MVPはsRGB・8bitに固定。Display-P3、float16、ICC、CMYKは後段へ分離                    |
+| [WCAG 2.2](https://www.w3.org/WAI/standards-guidelines/wcag/)                                                 | キーボード操作、フォーカス、ドラッグ代替、状態通知等が必要                  | Canvas外のDOM UIを主要操作面とし、WCAG 2.2 AAをUIの目標にする                        |
 
 ### 3.3 描画方式についての判断
 
@@ -94,24 +94,24 @@
 
 ### 4.1 採用・PoC候補
 
-| 区分 | リポジトリ | 2026-07-30時点 | 参考にする点 | 判断 |
-|---|---|---|---|---|
-| 第一候補 | [fabricjs/fabric.js](https://github.com/fabricjs/fabric.js) | 約31.4k stars、v7.4.0、2026-07-30 push、MIT | オブジェクト編集、テキスト、ブラシ、フィルター、clip path、シリアライズ | Phase 0の基準実装。条件を満たせばMVP採用 |
-| 対抗候補 | [konvajs/konva](https://github.com/konvajs/konva) | 約14.7k stars、v10.3.0、2026-07-28 push、MIT | ノード階層、複数レイヤー、キャッシュ、React統合、イベント | 同じPoCを実装しFabric.jsと比較。一方だけを採用 |
-| 高性能代替 | [pixijs/pixijs](https://github.com/pixijs/pixijs) | 約47.9k stars、v8.19.0、2026-07-19 push、MIT | WebGL/WebGPU、マスク、フィルター、ブレンド、テクスチャ管理 | Fabric/Konvaが性能基準を満たさない場合のみ次のPoCへ |
-| 高度画素処理 | [opencv/opencv](https://github.com/opencv/opencv) / [OpenCV.js docs](https://docs.opencv.org/4.12.0/d5/d10/tutorial_js_root.html) | 約90.2k stars、v5.0.0、2026-07-30 push、Apache-2.0 | 閾値、輪郭、色変換、形態学処理、将来の自動選択 | 標準フィルターには導入せず、高度機能だけWorkerで遅延ロード |
-| 大画像処理 | [kleisauke/wasm-vips](https://github.com/kleisauke/wasm-vips) | 約0.9k stars、v0.0.18、2026-07-30 push、ラッパーMIT | 低メモリのストリーミング処理、並列パイプライン | early developmentのためMVP後。実測と第三者ライセンス確認が採用条件 |
-| PSD将来候補 | [Agamnentzar/ag-psd](https://github.com/Agamnentzar/ag-psd) | 約0.7k stars、2026-07-02 push、MIT | ブラウザとWorkerでPSD読書き、レイヤー・マスク情報 | RGB/8bit等の制約があるため、PSD互換を独立プロジェクトとしてPoC |
+| 区分         | リポジトリ                                                                                                                        | 2026-07-30時点                                      | 参考にする点                                                            | 判断                                                               |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 第一候補     | [fabricjs/fabric.js](https://github.com/fabricjs/fabric.js)                                                                       | 約31.4k stars、v7.4.0、2026-07-30 push、MIT         | オブジェクト編集、テキスト、ブラシ、フィルター、clip path、シリアライズ | Phase 0の基準実装。条件を満たせばMVP採用                           |
+| 対抗候補     | [konvajs/konva](https://github.com/konvajs/konva)                                                                                 | 約14.7k stars、v10.3.0、2026-07-28 push、MIT        | ノード階層、複数レイヤー、キャッシュ、React統合、イベント               | 同じPoCを実装しFabric.jsと比較。一方だけを採用                     |
+| 高性能代替   | [pixijs/pixijs](https://github.com/pixijs/pixijs)                                                                                 | 約47.9k stars、v8.19.0、2026-07-19 push、MIT        | WebGL/WebGPU、マスク、フィルター、ブレンド、テクスチャ管理              | Fabric/Konvaが性能基準を満たさない場合のみ次のPoCへ                |
+| 高度画素処理 | [opencv/opencv](https://github.com/opencv/opencv) / [OpenCV.js docs](https://docs.opencv.org/4.12.0/d5/d10/tutorial_js_root.html) | 約90.2k stars、v5.0.0、2026-07-30 push、Apache-2.0  | 閾値、輪郭、色変換、形態学処理、将来の自動選択                          | 標準フィルターには導入せず、高度機能だけWorkerで遅延ロード         |
+| 大画像処理   | [kleisauke/wasm-vips](https://github.com/kleisauke/wasm-vips)                                                                     | 約0.9k stars、v0.0.18、2026-07-30 push、ラッパーMIT | 低メモリのストリーミング処理、並列パイプライン                          | early developmentのためMVP後。実測と第三者ライセンス確認が採用条件 |
+| PSD将来候補  | [Agamnentzar/ag-psd](https://github.com/Agamnentzar/ag-psd)                                                                       | 約0.7k stars、2026-07-02 push、MIT                  | ブラウザとWorkerでPSD読書き、レイヤー・マスク情報                       | RGB/8bit等の制約があるため、PSD互換を独立プロジェクトとしてPoC     |
 
 ### 4.2 完成アプリ・機能設計の参考
 
-| 区分 | リポジトリ | 2026-07-30時点 | 参考にする点 | 注意 |
-|---|---|---|---|---|
-| 完成アプリ | [viliusle/miniPaint](https://github.com/viliusle/miniPaint) | 約3.4k stars、v4.14.3、2026-04-20 push、MIT文面の独自ファイル | レイヤー、選択、ブラシ、魔法の杖、クローン、履歴、多数のフィルター、JSON保存 | 機能一覧、操作仕様、受け入れ試験の基準にする。丸ごとの基盤化はしない |
-| 短期SDK案 | [scaleflex/filerobot-image-editor](https://github.com/scaleflex/filerobot-image-editor) | 約1.9k stars、v4.9.1、2026-06-16 push、MIT | React/Konva統合、crop、調整、注釈、履歴、保存UI | 本格的な複数レイヤー編集には不足。製品範囲を簡易編集へ縮小する場合の代案 |
-| UX参考のみ | [nhn/tui.image-editor](https://github.com/nhn/tui.image-editor) | 約7.7k stars、v3.15.3、最終push 2023-11-20、MIT | crop、回転、図形、テキスト、マスク、フィルター、テーマAPI | Fabric 4.2依存かつ長期停滞。新規プロジェクトの中核依存にはしない |
-| 概念設計のみ | [GNOME/gimp](https://github.com/GNOME/gimp) | GitHubはGNOME GitLabのread-only mirror、GPL-3.0-or-later | レイヤー、マスク、チャンネル、選択、Undo、プラグインの機能境界 | コードやUI資産を流用せず、用語・機能構成・テスト観点だけ参照 |
-| 非破壊編集参考 | [darktable-org/darktable](https://github.com/darktable-org/darktable) | 活発に更新、GPL-3.0 | 非破壊処理パイプライン、履歴スタック、before/after、マスク付き調整 | デスクトップC実装。概念参照に限定 |
+| 区分           | リポジトリ                                                                              | 2026-07-30時点                                                | 参考にする点                                                                 | 注意                                                                     |
+| -------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 完成アプリ     | [viliusle/miniPaint](https://github.com/viliusle/miniPaint)                             | 約3.4k stars、v4.14.3、2026-04-20 push、MIT文面の独自ファイル | レイヤー、選択、ブラシ、魔法の杖、クローン、履歴、多数のフィルター、JSON保存 | 機能一覧、操作仕様、受け入れ試験の基準にする。丸ごとの基盤化はしない     |
+| 短期SDK案      | [scaleflex/filerobot-image-editor](https://github.com/scaleflex/filerobot-image-editor) | 約1.9k stars、v4.9.1、2026-06-16 push、MIT                    | React/Konva統合、crop、調整、注釈、履歴、保存UI                              | 本格的な複数レイヤー編集には不足。製品範囲を簡易編集へ縮小する場合の代案 |
+| UX参考のみ     | [nhn/tui.image-editor](https://github.com/nhn/tui.image-editor)                         | 約7.7k stars、v3.15.3、最終push 2023-11-20、MIT               | crop、回転、図形、テキスト、マスク、フィルター、テーマAPI                    | Fabric 4.2依存かつ長期停滞。新規プロジェクトの中核依存にはしない         |
+| 概念設計のみ   | [GNOME/gimp](https://github.com/GNOME/gimp)                                             | GitHubはGNOME GitLabのread-only mirror、GPL-3.0-or-later      | レイヤー、マスク、チャンネル、選択、Undo、プラグインの機能境界               | コードやUI資産を流用せず、用語・機能構成・テスト観点だけ参照             |
+| 非破壊編集参考 | [darktable-org/darktable](https://github.com/darktable-org/darktable)                   | 活発に更新、GPL-3.0                                           | 非破壊処理パイプライン、履歴スタック、before/after、マスク付き調整           | デスクトップC実装。概念参照に限定                                        |
 
 ### 4.3 採用方針
 
@@ -143,20 +143,20 @@
 
 ### 5.2 MVPに含める機能
 
-| 分類 | MVP |
-|---|---|
+| 分類     | MVP                                                                                  |
+| -------- | ------------------------------------------------------------------------------------ |
 | ファイル | PNG / JPEG / WebP読込、ドラッグ&ドロップ、クリップボード貼り付け、同形式への書き出し |
-| 文書 | 新規作成、キャンバスサイズ変更、背景透明、sRGB / 8bit RGBA |
-| 表示 | pan、zoom、fit、100%、チェッカーボード、ルーラーは任意 |
-| レイヤー | 追加、複製、削除、名前変更、順序、表示、ロック、透明度、基本ブレンド |
-| 変形 | 移動、拡大縮小、回転、反転、crop |
-| 描画 | ブラシ、消しゴム、スポイト、基本色選択 |
-| 選択 | 矩形、楕円、フリーハンド、全選択、解除、反転、コピー・切取・貼付 |
-| 調整 | 明るさ、コントラスト、彩度、色相、グレースケール、ぼかし、シャープ |
-| 履歴 | Undo / Redo、履歴パネル、連続操作のトランザクション化 |
-| 保存 | 独自プロジェクト形式、OPFS自動保存、クラッシュ復旧、PNG/JPEG/WebP書き出し |
-| UI | メニュー、ツールバー、ツール設定、レイヤー、履歴、プロパティ、ショートカット一覧 |
-| PWA | アプリシェルのオフライン起動、更新前の未保存確認 |
+| 文書     | 新規作成、キャンバスサイズ変更、背景透明、sRGB / 8bit RGBA                           |
+| 表示     | pan、zoom、fit、100%、チェッカーボード、ルーラーは任意                               |
+| レイヤー | 追加、複製、削除、名前変更、順序、表示、ロック、透明度、基本ブレンド                 |
+| 変形     | 移動、拡大縮小、回転、反転、crop                                                     |
+| 描画     | ブラシ、消しゴム、スポイト、基本色選択                                               |
+| 選択     | 矩形、楕円、フリーハンド、全選択、解除、反転、コピー・切取・貼付                     |
+| 調整     | 明るさ、コントラスト、彩度、色相、グレースケール、ぼかし、シャープ                   |
+| 履歴     | Undo / Redo、履歴パネル、連続操作のトランザクション化                                |
+| 保存     | 独自プロジェクト形式、OPFS自動保存、クラッシュ復旧、PNG/JPEG/WebP書き出し            |
+| UI       | メニュー、ツールバー、ツール設定、レイヤー、履歴、プロパティ、ショートカット一覧     |
+| PWA      | アプリシェルのオフライン起動、更新前の未保存確認                                     |
 
 ### 5.3 MVPに含めない機能
 
@@ -273,13 +273,13 @@ project.imageedit
 
 2〜3名の開発者で、Phase 0〜4のMVPを11〜16週間の仮置きとする。1名体制では並列化できないPoC、UI、画素処理、ブラウザ検証があるため、単純な人数割り以上に長期化する。
 
-| フェーズ | 期間目安 | 主成果物 |
-|---|---:|---|
-| Phase 0 | 1〜2週間 | スコープ、比較PoC、ADR、性能予算 |
-| Phase 1 | 2〜3週間 | アプリ基盤と開く→表示→書き出す垂直スライス |
-| Phase 2 | 4〜5週間 | レイヤー、選択、描画、変形、フィルター、履歴 |
-| Phase 3 | 2〜3週間 | 独自形式、OPFS自動保存、PWA、復旧 |
-| Phase 4 | 2〜3週間 | 性能、セキュリティ、アクセシビリティ、クロスブラウザ品質 |
+| フェーズ | 期間目安 | 主成果物                                                 |
+| -------- | -------: | -------------------------------------------------------- |
+| Phase 0  | 1〜2週間 | スコープ、比較PoC、ADR、性能予算                         |
+| Phase 1  | 2〜3週間 | アプリ基盤と開く→表示→書き出す垂直スライス               |
+| Phase 2  | 4〜5週間 | レイヤー、選択、描画、変形、フィルター、履歴             |
+| Phase 3  | 2〜3週間 | 独自形式、OPFS自動保存、PWA、復旧                        |
+| Phase 4  | 2〜3週間 | 性能、セキュリティ、アクセシビリティ、クロスブラウザ品質 |
 
 ### Phase 0: 調査・判断スパイク
 
@@ -462,16 +462,16 @@ PSD / XCF対応は「ファイルが開く」だけで完了としない。未�
 
 ## 9. テスト戦略
 
-| 種類 | 対象 |
-|---|---|
-| Unit | レイヤーツリー不変条件、Command apply/revert、座標変換、スキーママイグレーション |
-| Property-based | ランダム操作列のUndo/Redo、座標変換の往復、レイヤー順序 |
-| Image golden | アルファ合成、ブレンド、フィルター、マスク、保存復元、CPU/GPU差 |
-| Component | メニュー、ツールバー、レイヤーパネル、ダイアログ、ショートカット |
-| E2E | 開く、編集、Undo/Redo、保存、再読込、オフライン、権限拒否、clipboard |
-| Fuzz | 破損画像、巨大寸法、過剰レイヤー、破損プロジェクト、ZIP bomb相当 |
-| Performance | frame time、入力遅延、long task、ピークメモリ、フィルター、保存時間 |
-| Accessibility | axe等の自動検査、キーボード、VoiceOver、NVDA、200% zoom、reduced motion |
+| 種類           | 対象                                                                             |
+| -------------- | -------------------------------------------------------------------------------- |
+| Unit           | レイヤーツリー不変条件、Command apply/revert、座標変換、スキーママイグレーション |
+| Property-based | ランダム操作列のUndo/Redo、座標変換の往復、レイヤー順序                          |
+| Image golden   | アルファ合成、ブレンド、フィルター、マスク、保存復元、CPU/GPU差                  |
+| Component      | メニュー、ツールバー、レイヤーパネル、ダイアログ、ショートカット                 |
+| E2E            | 開く、編集、Undo/Redo、保存、再読込、オフライン、権限拒否、clipboard             |
+| Fuzz           | 破損画像、巨大寸法、過剰レイヤー、破損プロジェクト、ZIP bomb相当                 |
+| Performance    | frame time、入力遅延、long task、ピークメモリ、フィルター、保存時間              |
+| Accessibility  | axe等の自動検査、キーボード、VoiceOver、NVDA、200% zoom、reduced motion          |
 
 画像golden testはOSやGPUで完全一致しない場合があるため、機能ごとに許容誤差、比較色空間、alpha premultiplicationの扱いを明文化する。
 
@@ -503,32 +503,32 @@ PSD / XCF対応は「ファイルが開く」だけで完了としない。未�
 
 ## 12. リスクと対策
 
-| リスク | 影響 | 対策 |
-|---|---|---|
-| スコープがPhotoshop完全互換へ膨張 | MVP未完成 | MVP対象外を明文化し、機能追加を判断ゲート化 |
-| 4K/8K・多数レイヤーでメモリ枯渇 | タブクラッシュ、データ消失 | タイル差分、LRU、低解像度プレビュー、OPFSチェックポイント |
-| 描画ライブラリへ状態が密結合 | 交換不能、保存破損 | 独立した `EditorDocument` とRenderer Adapter |
-| Worker/WASM転送がボトルネック | UI遅延 | transfer込みで計測し、全面WASM化を避ける |
-| WebGPU・File System Accessの差 | ブラウザごとの機能欠落 | feature detection、WebGL/Canvas、input/download fallback |
-| Canvas CORS taint | 保存不能 | 外部URL制限、CORS fetch→Blob、明確なエラー |
-| 色・alphaの差 | 保存後の見た目不一致 | MVPをsRGB/8bitに限定し、golden testと誤差定義 |
-| 自動保存中断 | プロジェクト破損 | 一時領域、チェックポイント、完了マーカー、旧版保持 |
-| 古いOSS依存 | 脆弱性、ブラウザ非互換 | TUI等は参考のみ。active dependencyを選び、定期監査 |
-| ライセンス混在 | 配布停止・再実装 | NOTICE生成、資産の個別確認、GPLコード非流用 |
-| Canvas中心UIのアクセシビリティ不足 | 操作不能 | DOM操作面、キーボード代替、手動AT検証 |
+| リスク                             | 影響                       | 対策                                                      |
+| ---------------------------------- | -------------------------- | --------------------------------------------------------- |
+| スコープがPhotoshop完全互換へ膨張  | MVP未完成                  | MVP対象外を明文化し、機能追加を判断ゲート化               |
+| 4K/8K・多数レイヤーでメモリ枯渇    | タブクラッシュ、データ消失 | タイル差分、LRU、低解像度プレビュー、OPFSチェックポイント |
+| 描画ライブラリへ状態が密結合       | 交換不能、保存破損         | 独立した `EditorDocument` とRenderer Adapter              |
+| Worker/WASM転送がボトルネック      | UI遅延                     | transfer込みで計測し、全面WASM化を避ける                  |
+| WebGPU・File System Accessの差     | ブラウザごとの機能欠落     | feature detection、WebGL/Canvas、input/download fallback  |
+| Canvas CORS taint                  | 保存不能                   | 外部URL制限、CORS fetch→Blob、明確なエラー                |
+| 色・alphaの差                      | 保存後の見た目不一致       | MVPをsRGB/8bitに限定し、golden testと誤差定義             |
+| 自動保存中断                       | プロジェクト破損           | 一時領域、チェックポイント、完了マーカー、旧版保持        |
+| 古いOSS依存                        | 脆弱性、ブラウザ非互換     | TUI等は参考のみ。active dependencyを選び、定期監査        |
+| ライセンス混在                     | 配布停止・再実装           | NOTICE生成、資産の個別確認、GPLコード非流用               |
+| Canvas中心UIのアクセシビリティ不足 | 操作不能                   | DOM操作面、キーボード代替、手動AT検証                     |
 
 ## 13. 技術判断ゲート
 
-| ゲート | 決めること | 完了条件 |
-|---|---|---|
-| G0 製品範囲 | desktop-first、local-first、最大画像、対応形式 | ペルソナと上位ワークフローが承認済み |
-| G1 描画 | Fabric.js / Konva / PixiJS等 | 同一PoCの性能、実装量、復元性で決定 |
-| G2 履歴 | Command、差分、チェックポイント | 100操作Undoとメモリ予算を満たす |
-| G3 ラスター格納 | 全面buffer / 256px / 512px tile | ブラシ遅延、フィルター、メモリで決定 |
-| G4 計算 | main JS / Worker JS / WASM / GPU | 転送込み実時間と出力一致で決定 |
-| G5 保存 | OPFS / IndexedDB / File System Access | 4ブラウザ、quota、中断復旧を検証 |
-| G6 形式 | 独自形式 / OpenRaster / PSD | 非破壊情報、互換性、ライセンスで決定 |
-| G7 バックエンド | なし / 任意同期 / collaboration | プライバシー、運用費、競合解決を再評価 |
+| ゲート          | 決めること                                     | 完了条件                               |
+| --------------- | ---------------------------------------------- | -------------------------------------- |
+| G0 製品範囲     | desktop-first、local-first、最大画像、対応形式 | ペルソナと上位ワークフローが承認済み   |
+| G1 描画         | Fabric.js / Konva / PixiJS等                   | 同一PoCの性能、実装量、復元性で決定    |
+| G2 履歴         | Command、差分、チェックポイント                | 100操作Undoとメモリ予算を満たす        |
+| G3 ラスター格納 | 全面buffer / 256px / 512px tile                | ブラシ遅延、フィルター、メモリで決定   |
+| G4 計算         | main JS / Worker JS / WASM / GPU               | 転送込み実時間と出力一致で決定         |
+| G5 保存         | OPFS / IndexedDB / File System Access          | 4ブラウザ、quota、中断復旧を検証       |
+| G6 形式         | 独自形式 / OpenRaster / PSD                    | 非破壊情報、互換性、ライセンスで決定   |
+| G7 バックエンド | なし / 任意同期 / collaboration                | プライバシー、運用費、競合解決を再評価 |
 
 ## 14. 作成すべきADR
 

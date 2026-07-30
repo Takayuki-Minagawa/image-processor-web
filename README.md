@@ -30,28 +30,46 @@ npm run dev
 
 ```bash
 npm test
+npm run lint
 npm run build
 npm run test:e2e
 ```
 
+`npm run test:e2e`はGitHub Pagesと同じ
+`/image-processor-web/`サブパスで本番ビルドを生成し、Vite previewに対して
+Playwrightを実行します。既存の`dist`を再利用するCIでは
+`PLAYWRIGHT_SKIP_BUILD=true npm run test:e2e`を使用します。
+
+コード品質の確認にはESLint（TypeScript / React Hooks）とPrettierを使用します。
+`npm run format:check`は差分確認用、`npm run format`は明示的に全体を整形するときに
+使用してください。
+
+TypeScript 7はコンパイラCLIを`@typescript/native` aliasから提供し、APIを必要とする
+typescript-eslint向けには`@typescript/typescript6`を`typescript` aliasとして
+併設しています。`npm run build`の`tsc`はTypeScript 7を実行します。
+
 ## キーボードショートカット
 
-| 操作 | macOS | Windows / Linux |
-|---|---|---|
-| Undo / Redo | `⌘Z` / `⇧⌘Z` | `Ctrl+Z` / `Ctrl+Y` |
-| 保存 | `⌘S` | `Ctrl+S` |
-| 開く | `⌘O` | `Ctrl+O` |
-| コピー / 切取 / 貼付 | `⌘C/X/V` | `Ctrl+C/X/V` |
-| 選択 / ブラシ / 消しゴム / パン | `V` / `B` / `E` / `H` | 同左 |
-| ズームイン / アウト / 100% | `+` / `-` / `0` | 同左 |
-| 選択を削除 | `Delete` / `Backspace` | 同左 |
-| ヘルプ | `?` | 同左 |
+| 操作                            | macOS                  | Windows / Linux     |
+| ------------------------------- | ---------------------- | ------------------- |
+| Undo / Redo                     | `⌘Z` / `⇧⌘Z`           | `Ctrl+Z` / `Ctrl+Y` |
+| 保存                            | `⌘S`                   | `Ctrl+S`            |
+| 開く                            | `⌘O`                   | `Ctrl+O`            |
+| コピー / 切取 / 貼付            | `⌘C/X/V`               | `Ctrl+C/X/V`        |
+| 選択 / ブラシ / 消しゴム / パン | `V` / `B` / `E` / `H`  | 同左                |
+| ズームイン / アウト / 100%      | `+` / `-` / `0`        | 同左                |
+| 選択を削除                      | `Delete` / `Backspace` | 同左                |
+| ヘルプ                          | `?`                    | 同左                |
 
 フォームへ入力中は編集用の1文字ショートカットを実行しません。
 
 ## GitHub Pages
 
-`.github/workflows/pages.yml`は`main`へのpushまたは手動実行で、テスト、Viteビルド、Pages配布を順に実行します。リポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に設定してください。
+`.github/workflows/pages.yml`は`main`へのpushまたは手動実行で、lint、単体テスト、
+Vite本番ビルド、Pagesサブパス上のブラウザE2E、Pages配布を順に実行します。
+E2Eが失敗した場合は成果物をアップロードせず、デプロイも開始しません。
+リポジトリの **Settings → Pages → Build and deployment → Source** を
+**GitHub Actions** に設定してください。
 
 プロジェクトサイトのパスはビルド時に`GITHUB_REPOSITORY`から決まり、このリポジトリでは`/image-processor-web/`になります。ローカル開発では`/`を使用します。
 

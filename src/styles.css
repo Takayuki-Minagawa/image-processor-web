@@ -1,7 +1,12 @@
 :root {
   font-family:
-    Inter, 'Hiragino Sans', 'Yu Gothic UI', system-ui, -apple-system,
-    BlinkMacSystemFont, sans-serif;
+    Inter,
+    'Hiragino Sans',
+    'Yu Gothic UI',
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   color: #f2f3f8;
   background: #0b0c11;
   font-synthesis: none;
@@ -1799,7 +1804,9 @@ kbd {
   }
 
   .topbar {
-    grid-template-columns: max-content max-content minmax(120px, 1fr) max-content;
+    grid-template-columns:
+      max-content max-content minmax(120px, 1fr)
+      max-content;
   }
 
   .workspace {

@@ -1,8 +1,10 @@
 import {
   MAX_IMAGE_BYTES,
-  MAX_IMAGE_DIMENSION,
   MAX_IMAGE_PIXELS,
-} from '../lib/files'
+  assertSafeImageDimensions,
+  imageDimensionsAreSafe,
+  matchEmbeddedImageDataUrl,
+} from '../lib/imageSafety'
 import {
   IMAGE_HEADER_READ_BYTES,
   parseImageDimensions,
@@ -15,58 +17,28 @@ export interface RestorableEditorSnapshot {
   height: number
 }
 
-export const MAX_PROJECT_DECODE_PIXELS = 128 * 1_024 * 1_024
+export const MAX_PROJECT_DECODE_PIXELS = 2 * MAX_IMAGE_PIXELS
 export const MAX_PROJECT_OBJECTS = 500
 export const MAX_PROJECT_JSON_NODES = 50_000
 
 const UNSAFE_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
-const IMAGE_DATA_URL_METADATA =
-  /^data:(image\/(?:png|jpeg|webp))(?:;charset=[^;,]+)?;base64,/i
-
-const assertSafeImageDimensions = (
-  dimensions: ImageDimensions,
-): ImageDimensions => {
-  if (
-    dimensions.width <= 0 ||
-    dimensions.height <= 0 ||
-    dimensions.width > MAX_IMAGE_DIMENSION ||
-    dimensions.height > MAX_IMAGE_DIMENSION ||
-    dimensions.width * dimensions.height > MAX_IMAGE_PIXELS
-  ) {
-    throw new RangeError(
-      'Image dimensions exceed the 8,192 px / 64 MP safety limit.',
-    )
-  }
-  return dimensions
-}
-
-export const imageDimensionsMatchHeader = (
-  decoded: ImageDimensions,
-  declared: ImageDimensions,
-): boolean =>
-  (decoded.width === declared.width &&
-    decoded.height === declared.height) ||
-  (decoded.width === declared.height && decoded.height === declared.width)
+export { imageDimensionsMatchHeader } from '../lib/imageSafety'
 
 export const inspectEmbeddedImageDataUrl = (
   dataUrl: string,
 ): { dimensions: ImageDimensions; decodedBytes: number } => {
-  const match = IMAGE_DATA_URL_METADATA.exec(dataUrl)
-  if (!match) {
+  const metadata = matchEmbeddedImageDataUrl(dataUrl)
+  if (!metadata) {
     throw new TypeError(
       'Projects may contain only embedded PNG, JPEG, or WebP images.',
     )
   }
 
-  const encoded = dataUrl.slice(match[0].length)
+  const encoded = dataUrl.slice(metadata.prefixLength)
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
     throw new TypeError('The embedded image contains invalid Base64 data.')
   }
-  const padding = encoded.endsWith('==')
-    ? 2
-    : encoded.endsWith('=')
-      ? 1
-      : 0
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
   const decodedBytes = Math.max(
     0,
     Math.floor((encoded.length * 3) / 4) - padding,
@@ -97,7 +69,7 @@ export const inspectEmbeddedImageDataUrl = (
   const bytes = Uint8Array.from(decodedPrefix, (character) =>
     character.charCodeAt(0),
   )
-  const dimensions = parseImageDimensions(bytes, match[1].toLowerCase())
+  const dimensions = parseImageDimensions(bytes, metadata.mimeType)
   if (!dimensions) {
     throw new TypeError(
       'The embedded image dimensions could not be verified safely.',
@@ -188,11 +160,10 @@ export const assertRestorableEditorSnapshot = (
   }
 
   if (
-    snapshot.width < 1 ||
-    snapshot.height < 1 ||
-    snapshot.width > MAX_IMAGE_DIMENSION ||
-    snapshot.height > MAX_IMAGE_DIMENSION ||
-    snapshot.width * snapshot.height > MAX_IMAGE_PIXELS
+    !imageDimensionsAreSafe({
+      width: snapshot.width,
+      height: snapshot.height,
+    })
   ) {
     throw new RangeError(
       'Project dimensions exceed the 8,192 px / 64 MP safety limit.',

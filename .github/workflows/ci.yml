@@ -23,11 +23,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Unit test and build
-        run: npm run check
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build production site
+        run: npm run build
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Browser E2E
+      - name: Browser E2E on production Pages path
         run: npm run test:e2e
+        env:
+          PLAYWRIGHT_SKIP_BUILD: 'true'

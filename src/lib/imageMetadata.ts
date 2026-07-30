@@ -39,27 +39,11 @@ const pngDimensions = (bytes: Uint8Array): ImageDimensions | null => {
 }
 
 const JPEG_START_OF_FRAME_MARKERS = new Set([
-  0xc0,
-  0xc1,
-  0xc2,
-  0xc3,
-  0xc5,
-  0xc6,
-  0xc7,
-  0xc9,
-  0xca,
-  0xcb,
-  0xcd,
-  0xce,
-  0xcf,
+  0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
 ])
 
 const jpegDimensions = (bytes: Uint8Array): ImageDimensions | null => {
-  if (
-    bytes.length < 4 ||
-    bytes[0] !== 0xff ||
-    bytes[1] !== 0xd8
-  ) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     return null
   }
 

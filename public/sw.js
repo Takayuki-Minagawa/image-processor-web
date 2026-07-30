@@ -6,9 +6,23 @@ const SCOPE_KEY = new URL(self.registration.scope).pathname.replace(
 const CACHE_PREFIX = `pixelweave-shell-${SCOPE_KEY}-`
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_ID}`
 const PRECACHE_URLS = __PIXELWEAVE_PRECACHE__
+const SCOPE_URL = new URL(self.registration.scope)
 
 const scopedUrl = (relativeUrl) =>
   new URL(relativeUrl, self.registration.scope).href
+
+const isWithinScope = (url) =>
+  url.origin === SCOPE_URL.origin && url.pathname.startsWith(SCOPE_URL.pathname)
+
+const offlineNavigationResponse = () =>
+  new Response('Pixelweave Studio is currently offline.', {
+    status: 503,
+    statusText: 'Service Unavailable',
+    headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'text/plain; charset=utf-8',
+    },
+  })
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -44,10 +58,7 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter(
-              (key) =>
-                key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME,
-            )
+            .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
             .map((key) => caches.delete(key)),
         ),
       )
@@ -66,15 +77,21 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return
 
   const url = new URL(request.url)
-  if (url.origin !== self.location.origin) return
+  if (!isWithinScope(url)) return
 
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() =>
-        caches
-          .open(CACHE_NAME)
-          .then((cache) => cache.match(scopedUrl('./index.html'))),
-      ),
+      (async () => {
+        try {
+          return await fetch(request)
+        } catch {
+          const cache = await caches.open(CACHE_NAME)
+          return (
+            (await cache.match(scopedUrl('./index.html'))) ??
+            offlineNavigationResponse()
+          )
+        }
+      })(),
     )
     return
   }
@@ -85,7 +102,11 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached
 
       const response = await fetch(request)
-      if (response.ok) {
+      if (
+        response.ok &&
+        response.type === 'basic' &&
+        isWithinScope(new URL(response.url))
+      ) {
         await cache.put(request, response.clone())
       }
       return response

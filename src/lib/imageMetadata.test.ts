@@ -17,27 +17,8 @@ describe('parseImageDimensions', () => {
 
   it('reads JPEG start-of-frame dimensions after metadata', () => {
     const bytes = new Uint8Array([
-      0xff,
-      0xd8,
-      0xff,
-      0xe0,
-      0,
-      4,
-      0,
-      0,
-      0xff,
-      0xc0,
-      0,
-      11,
-      8,
-      0x04,
-      0x38,
-      0x07,
-      0x80,
-      3,
-      0,
-      0,
-      0,
+      0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 0x04, 0x38,
+      0x07, 0x80, 3, 0, 0, 0,
     ])
 
     expect(parseImageDimensions(bytes, 'image/jpeg')).toEqual({
@@ -64,8 +45,6 @@ describe('parseImageDimensions', () => {
     expect(
       parseImageDimensions(new Uint8Array([0xff, 0xd8]), 'image/jpeg'),
     ).toBeNull()
-    expect(
-      parseImageDimensions(new Uint8Array(30), 'image/gif'),
-    ).toBeNull()
+    expect(parseImageDimensions(new Uint8Array(30), 'image/gif')).toBeNull()
   })
 })

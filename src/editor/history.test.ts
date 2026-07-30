@@ -23,6 +23,28 @@ describe('History', () => {
     expect(history.size).toBe(1)
   })
 
+  it('tracks repeated object comparisons as pairs', () => {
+    type Branch = {
+      value: number
+      parent?: { first: Branch; second: Branch }
+    }
+
+    const shared: Branch = { value: 1 }
+    const left = { first: shared, second: shared }
+    shared.parent = left
+
+    const first: Branch = { value: 1 }
+    const second: Branch = { value: 1 }
+    const right = { first, second }
+    first.parent = right
+    second.parent = right
+
+    const history = new History<typeof left>()
+    expect(history.push(left)).toBe(true)
+    expect(history.push(right)).toBe(false)
+    expect(history.size).toBe(1)
+  })
+
   it('discards the redo branch after a new commit', () => {
     const history = new History<number>()
     history.push(0)
@@ -83,10 +105,7 @@ describe('History', () => {
     expect(history.size).toBe(0)
   })
 
-  it.each([0, -1, 1.5, Number.NaN])(
-    'rejects invalid limit %s',
-    (limit) => {
-      expect(() => new History({ limit })).toThrow(RangeError)
-    },
-  )
+  it.each([0, -1, 1.5, Number.NaN])('rejects invalid limit %s', (limit) => {
+    expect(() => new History({ limit })).toThrow(RangeError)
+  })
 })

@@ -35,10 +35,9 @@ describe('assertRestorableEditorSnapshot', () => {
         width: 1280,
         height: 720,
         json: {
-          objects: Array.from(
-            { length: MAX_PROJECT_OBJECTS + 1 },
-            () => ({ type: 'Rect' }),
-          ),
+          objects: Array.from({ length: MAX_PROJECT_OBJECTS + 1 }, () => ({
+            type: 'Rect',
+          })),
         },
       }),
     ).toThrow(`at most ${MAX_PROJECT_OBJECTS}`)

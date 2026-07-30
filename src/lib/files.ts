@@ -3,13 +3,21 @@ import {
   parseImageDimensions,
   type ImageDimensions,
 } from './imageMetadata'
+import {
+  MAX_IMAGE_BYTES,
+  imageDimensionsAreSafe,
+  imageDimensionsMatchHeader,
+  SUPPORTED_IMAGE_MIME_TYPES,
+} from './imageSafety'
 
-const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const IMAGE_TYPES = new Set<string>(SUPPORTED_IMAGE_MIME_TYPES)
 
-export const MAX_IMAGE_BYTES = 50 * 1024 * 1024
 export const MAX_PROJECT_BYTES = 100 * 1024 * 1024
-export const MAX_IMAGE_DIMENSION = 8192
-export const MAX_IMAGE_PIXELS = 64 * 1024 * 1024
+export {
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_PIXELS,
+} from './imageSafety'
 
 export class FileValidationError extends Error {
   constructor(message: string) {
@@ -68,9 +76,7 @@ export async function getImageDimensions(
   )
   const declaredDimensions = parseImageDimensions(header, file.type)
   if (!declaredDimensions) {
-    throw new FileValidationError(
-      '画像の寸法を安全に確認できませんでした。',
-    )
+    throw new FileValidationError('画像の寸法を安全に確認できませんでした。')
   }
   assertSafeImageDimensions(declaredDimensions)
 
@@ -98,12 +104,7 @@ export async function getImageDimensions(
   }
 
   assertSafeImageDimensions(dimensions)
-  const matchesHeader =
-    (dimensions.width === declaredDimensions.width &&
-      dimensions.height === declaredDimensions.height) ||
-    (dimensions.width === declaredDimensions.height &&
-      dimensions.height === declaredDimensions.width)
-  if (!matchesHeader) {
+  if (!imageDimensionsMatchHeader(dimensions, declaredDimensions)) {
     throw new FileValidationError(
       '画像ヘッダーとデコード結果の寸法が一致しません。',
     )
@@ -113,13 +114,7 @@ export async function getImageDimensions(
 }
 
 function assertSafeImageDimensions(dimensions: ImageDimensions): void {
-  if (
-    dimensions.width <= 0 ||
-    dimensions.height <= 0 ||
-    dimensions.width > MAX_IMAGE_DIMENSION ||
-    dimensions.height > MAX_IMAGE_DIMENSION ||
-    dimensions.width * dimensions.height > MAX_IMAGE_PIXELS
-  ) {
+  if (!imageDimensionsAreSafe(dimensions)) {
     throw new FileValidationError(
       '画像寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
     )
@@ -137,7 +132,9 @@ export function readFileAsDataUrl(file: Blob): Promise<string> {
       }
     })
     reader.addEventListener('error', () => {
-      reject(reader.error ?? new FileValidationError('画像を読み込めませんでした。'))
+      reject(
+        reader.error ?? new FileValidationError('画像を読み込めませんでした。'),
+      )
     })
     reader.readAsDataURL(file)
   })
@@ -173,6 +170,6 @@ export function downloadText(
   try {
     downloadUrl(url, fileName)
   } finally {
-    URL.revokeObjectURL(url)
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 }

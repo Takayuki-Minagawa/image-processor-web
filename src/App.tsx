@@ -17,7 +17,6 @@ import {
   Blend,
   Brush,
   Check,
-  ChevronDown,
   Circle,
   Cloud,
   CloudOff,
@@ -28,7 +27,6 @@ import {
   Eye,
   EyeOff,
   FileImage,
-  FileJson,
   FlipHorizontal2,
   FlipVertical2,
   Hand,
@@ -84,19 +82,15 @@ import {
   MAX_PROJECT_BYTES,
   downloadText,
   downloadUrl,
-  getImageDimensions,
   readFileAsDataUrl,
   sanitizeFileStem,
   validateImageHeader,
 } from './lib/files'
-import {
-  applyServiceWorkerUpdate,
-  getPwaState,
-  subscribePwaState,
-} from './pwa'
+import { MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from './lib/imageSafety'
+import { applyServiceWorkerUpdate, getPwaState, subscribePwaState } from './pwa'
 
 type InspectorTab = 'layers' | 'adjustments' | 'history'
-type DialogName = 'new' | 'export' | 'shortcuts' | null
+type DialogName = 'menu' | 'new' | 'export' | 'shortcuts' | null
 
 interface HistoryLabel {
   id: number
@@ -125,6 +119,7 @@ const DEFAULT_WIDTH = 1280
 const DEFAULT_HEIGHT = 720
 const AUTOSAVE_DELAY = 1200
 const HISTORY_DELAY = 280
+const SERVICE_WORKER_UPDATE_TIMEOUT = 10_000
 const DEBOUNCED_CHANGE_REASONS = new Set<EditorChangeReason>([
   'object-modified',
   'text-changed',
@@ -211,6 +206,32 @@ function isEditableTarget(target: EventTarget | null): boolean {
     target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable)
   )
+}
+
+const PROJECT_ERROR_MESSAGES: Record<string, string> = {
+  'invalid-json': 'プロジェクトファイルのJSON形式が正しくありません。',
+  'invalid-schema': 'プロジェクトファイルの内容が現在の形式に一致しません。',
+  'unsupported-version': 'このプロジェクトのバージョンには対応していません。',
+  'invalid-app': 'このファイルはPixelweaveのプロジェクトではありません。',
+}
+
+function userFacingErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = String(error.code)
+    if (PROJECT_ERROR_MESSAGES[code]) return PROJECT_ERROR_MESSAGES[code]
+  }
+
+  if (error instanceof DOMException) {
+    if (error.name === 'QuotaExceededError') {
+      return '端末の保存領域が不足しています。不要なデータを削除してから再試行してください。'
+    }
+    if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+      return 'ブラウザーの権限またはセキュリティ設定により操作できませんでした。'
+    }
+  }
+
+  const message = error instanceof Error ? error.message.trim() : ''
+  return /[\u3040-\u30ff\u3400-\u9fff]/u.test(message) ? message : fallback
 }
 
 function layerIcon(type: string): ReactNode {
@@ -323,6 +344,7 @@ export default function App() {
     revision: -1,
   })
   const revisionRef = useRef(0)
+  const latestSnapshotRef = useRef<EditorSnapshot | null>(null)
   const pendingHistoryRef = useRef<{
     reason: EditorChangeReason
     snapshot: EditorSnapshot
@@ -338,6 +360,7 @@ export default function App() {
   const dirtyRef = useRef(false)
   const busyRef = useRef(false)
   const busyDepthRef = useRef(0)
+  const updateTimeoutRef = useRef<number | null>(null)
   const editorOperationGateRef = useRef(new AsyncOperationGate())
 
   const [tool, setTool] = useState<EditorTool>('select')
@@ -394,14 +417,39 @@ export default function App() {
     multiplier: number
   }>({ format: 'png', quality: 0.92, multiplier: 1 })
 
-  projectNameRef.current = projectName
-  dirtyRef.current = dirty
   const pwaState = useSyncExternalStore(
     subscribePwaState,
     getPwaState,
     getPwaState,
   )
   const updateAvailable = pwaState.updateAvailable && !updateDismissed
+
+  useEffect(() => {
+    projectNameRef.current = projectName
+  }, [projectName])
+
+  useEffect(() => {
+    dirtyRef.current = dirty
+  }, [dirty])
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (updateTimeoutRef.current !== null) {
+        window.clearTimeout(updateTimeoutRef.current)
+      }
+    },
+    [],
+  )
 
   const beginBusy = useCallback(() => {
     busyDepthRef.current += 1
@@ -434,10 +482,10 @@ export default function App() {
         endBusy()
         setStatus({
           kind: 'error',
-          message:
-            error instanceof Error
-              ? error.message
-              : '編集操作を完了できませんでした。',
+          message: userFacingErrorMessage(
+            error,
+            '編集操作を完了できませんでした。',
+          ),
         })
         return
       }
@@ -445,10 +493,10 @@ export default function App() {
         .catch((error: unknown) => {
           setStatus({
             kind: 'error',
-            message:
-              error instanceof Error
-                ? error.message
-                : '編集操作を完了できませんでした。',
+            message: userFacingErrorMessage(
+              error,
+              '編集操作を完了できませんでした。',
+            ),
           })
         })
         .finally(endBusy)
@@ -534,10 +582,7 @@ export default function App() {
         .then(async () => {
           if (generation !== autosaveGenerationRef.current) return
           const newest = latestAutosaveRequestRef.current
-          if (
-            newest.generation === generation &&
-            newest.revision > revision
-          ) {
+          if (newest.generation === generation && newest.revision > revision) {
             return
           }
           await autosaveRef.current.save(project)
@@ -666,6 +711,7 @@ export default function App() {
       const engine = engineRef.current
       if (!engine && !capturedSnapshot) return
       const snapshot = capturedSnapshot ?? engine!.snapshot()
+      latestSnapshotRef.current = snapshot
       if (!historyRef.current.push(snapshot)) return
       dirtyRef.current = true
       setDirty(true)
@@ -693,6 +739,7 @@ export default function App() {
       if (!engine) return
       revisionRef.current += 1
       const snapshot = engine.snapshot()
+      latestSnapshotRef.current = snapshot
 
       if (!DEBOUNCED_CHANGE_REASONS.has(reason)) {
         if (historyTimerRef.current !== null) {
@@ -716,15 +763,12 @@ export default function App() {
         window.clearTimeout(historyTimerRef.current)
       }
       pendingHistoryRef.current = { reason, snapshot }
-      historyTimerRef.current = window.setTimeout(
-        () => {
-          historyTimerRef.current = null
-          const pending = pendingHistoryRef.current
-          pendingHistoryRef.current = null
-          if (pending) commitSnapshot(pending.reason, pending.snapshot)
-        },
-        HISTORY_DELAY,
-      )
+      historyTimerRef.current = window.setTimeout(() => {
+        historyTimerRef.current = null
+        const pending = pendingHistoryRef.current
+        pendingHistoryRef.current = null
+        if (pending) commitSnapshot(pending.reason, pending.snapshot)
+      }, HISTORY_DELAY)
     },
     [commitSnapshot],
   )
@@ -772,7 +816,9 @@ export default function App() {
         onLayersChanged: setLayers,
         onSelectionChanged: (ids) => {
           setSelectedIds(ids)
-          setSelectionTransform(engineRef.current?.getSelectionTransform() ?? null)
+          setSelectionTransform(
+            engineRef.current?.getSelectionTransform() ?? null,
+          )
           setFilters(
             engineRef.current?.getSelectedImageFilters() ?? DEFAULT_FILTERS,
           )
@@ -783,6 +829,7 @@ export default function App() {
     })
     engineRef.current = engine
     const initialSnapshot = engine.snapshot()
+    latestSnapshotRef.current = initialSnapshot
     historyRef.current.reset(initialSnapshot)
     refreshHistoryState()
     refreshEditorState()
@@ -874,6 +921,7 @@ export default function App() {
       try {
         await waitForEditorOperations()
         await engine.restore(snapshot)
+        latestSnapshotRef.current = snapshot
         refreshEditorState()
         fitCanvas()
       } finally {
@@ -906,10 +954,7 @@ export default function App() {
     } catch (error) {
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '操作を元に戻せませんでした。',
+        message: userFacingErrorMessage(error, '操作を元に戻せませんでした。'),
       })
     } finally {
       endBusy()
@@ -941,10 +986,7 @@ export default function App() {
     } catch (error) {
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '操作をやり直せませんでした。',
+        message: userFacingErrorMessage(error, '操作をやり直せませんでした。'),
       })
     } finally {
       endBusy()
@@ -967,14 +1009,11 @@ export default function App() {
       try {
         await waitForEditorOperations()
         await validateImageHeader(file)
-        const dimensions = await getImageDimensions(file)
-        const hasLayers = engine.getLayers().length > 0
-        if (!hasLayers) {
-          engine.setCanvasSize(dimensions.width, dimensions.height)
-        }
         activateTool('select')
         const dataUrl = await readFileAsDataUrl(file)
-        await engine.importImage(dataUrl, sanitizeFileStem(file.name))
+        await engine.importImage(dataUrl, sanitizeFileStem(file.name), {
+          resizeCanvasIfEmpty: true,
+        })
         sourceNameRef.current = file.name
         if (projectNameRef.current === '無題のデザイン') {
           const nextName = sanitizeFileStem(file.name)
@@ -986,10 +1025,10 @@ export default function App() {
       } catch (error) {
         setStatus({
           kind: 'error',
-          message:
-            error instanceof Error
-              ? error.message
-              : '画像を読み込めませんでした。',
+          message: userFacingErrorMessage(
+            error,
+            '画像を読み込めませんでした。',
+          ),
         })
       } finally {
         endBusy()
@@ -1038,6 +1077,7 @@ export default function App() {
         const generation = autosaveGenerationRef.current
         await restoreSnapshot(projectToSnapshot(project))
         const snapshot = engineRef.current!.snapshot()
+        latestSnapshotRef.current = snapshot
         revisionRef.current += 1
         historyRef.current.reset(snapshot)
         refreshHistoryState()
@@ -1048,7 +1088,11 @@ export default function App() {
         sourceNameRef.current = project.metadata.sourceFileName
         saveHandleRef.current = null
         setHistoryLabels([
-          { id: historyIdRef.current++, label: 'プロジェクトを開く', time: nowLabel() },
+          {
+            id: historyIdRef.current++,
+            label: 'プロジェクトを開く',
+            time: nowLabel(),
+          },
         ])
         dirtyRef.current = false
         setDirty(false)
@@ -1057,10 +1101,10 @@ export default function App() {
       } catch (error) {
         setStatus({
           kind: 'error',
-          message:
-            error instanceof Error
-              ? error.message
-              : 'プロジェクトを開けませんでした。',
+          message: userFacingErrorMessage(
+            error,
+            'プロジェクトを開けませんでした。ファイル形式を確認してください。',
+          ),
         })
       } finally {
         endBusy()
@@ -1090,6 +1134,7 @@ export default function App() {
       await waitForEditorOperations()
       flushPendingHistory()
       const snapshot = engineRef.current?.snapshot()
+      if (snapshot) latestSnapshotRef.current = snapshot
       const savedRevision = revisionRef.current
       const project = makeProject(snapshot)
       const source = serializeProject(project)
@@ -1121,6 +1166,7 @@ export default function App() {
       }
       const latestSnapshot = engineRef.current?.snapshot()
       if (latestSnapshot) {
+        latestSnapshotRef.current = latestSnapshot
         await flushAutosave(latestSnapshot, revisionRef.current)
       }
       if (savedRevision === revisionRef.current) {
@@ -1132,18 +1178,17 @@ export default function App() {
         setDirty(true)
         setStatus({
           kind: 'warning',
-          message:
-            '保存中に追加の変更がありました。もう一度保存してください。',
+          message: '保存中に追加の変更がありました。もう一度保存してください。',
         })
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : 'プロジェクトを保存できませんでした。',
+        message: userFacingErrorMessage(
+          error,
+          'プロジェクトを保存できませんでした。',
+        ),
       })
     } finally {
       endBusy()
@@ -1180,8 +1225,14 @@ export default function App() {
       cancelPendingAutosave()
       autosaveGenerationRef.current += 1
       const generation = autosaveGenerationRef.current
-      const width = Math.min(8192, Math.max(1, Math.round(newDocument.width)))
-      const height = Math.min(8192, Math.max(1, Math.round(newDocument.height)))
+      const width = Math.min(
+        MAX_IMAGE_DIMENSION,
+        Math.max(1, Math.round(newDocument.width)),
+      )
+      const height = Math.min(
+        MAX_IMAGE_DIMENSION,
+        Math.max(1, Math.round(newDocument.height)),
+      )
       engine.clear(width, height)
       cancelPendingHistory()
       cancelPendingAutosave()
@@ -1192,6 +1243,7 @@ export default function App() {
       sourceNameRef.current = undefined
       saveHandleRef.current = null
       const snapshot = engine.snapshot()
+      latestSnapshotRef.current = snapshot
       historyRef.current.reset(snapshot)
       refreshHistoryState()
       setHistoryLabels([
@@ -1217,10 +1269,10 @@ export default function App() {
     } catch (error) {
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '新しいキャンバスを作成できませんでした。',
+        message: userFacingErrorMessage(
+          error,
+          '新しいキャンバスを作成できませんでした。',
+        ),
       })
     } finally {
       endBusy()
@@ -1237,6 +1289,7 @@ export default function App() {
       const generation = autosaveGenerationRef.current
       await restoreSnapshot(projectToSnapshot(project))
       const snapshot = engineRef.current!.snapshot()
+      latestSnapshotRef.current = snapshot
       revisionRef.current += 1
       historyRef.current.reset(snapshot)
       refreshHistoryState()
@@ -1248,17 +1301,21 @@ export default function App() {
       dirtyRef.current = true
       setDirty(true)
       setHistoryLabels([
-        { id: historyIdRef.current++, label: '自動保存を復元', time: nowLabel() },
+        {
+          id: historyIdRef.current++,
+          label: '自動保存を復元',
+          time: nowLabel(),
+        },
       ])
       setStatus({ kind: 'success', message: '前回の編集を復元しました。' })
       void enqueueAutosave(snapshot, generation).catch(() => undefined)
     } catch (error) {
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '自動保存を復元できませんでした。',
+        message: userFacingErrorMessage(
+          error,
+          '自動保存を復元できませんでした。',
+        ),
       })
     }
   }, [
@@ -1278,25 +1335,16 @@ export default function App() {
     const engine = engineRef.current
     if (dirtyRef.current && engine) {
       setAutosaveState('saving')
-      void enqueueAutosave(engine.snapshot(), generation).catch(
-        () => undefined,
-      )
+      void enqueueAutosave(engine.snapshot(), generation).catch(() => undefined)
     } else {
       void clearAutosaveForGeneration(generation)
     }
-  }, [
-    cancelPendingAutosave,
-    clearAutosaveForGeneration,
-    enqueueAutosave,
-  ])
+  }, [cancelPendingAutosave, clearAutosaveForGeneration, enqueueAutosave])
 
-  const applyFilters = useCallback(
-    (next: Required<ImageFilterSettings>) => {
-      setFilters(next)
-      engineRef.current?.applyImageFilters(next)
-    },
-    [],
-  )
+  const applyFilters = useCallback((next: Required<ImageFilterSettings>) => {
+    setFilters(next)
+    engineRef.current?.applyImageFilters(next)
+  }, [])
 
   const addShape = (kind: 'rect' | 'ellipse') => {
     const engine = engineRef.current
@@ -1325,9 +1373,9 @@ export default function App() {
         documentSize.height * exportSettings.multiplier,
       )
       if (
-        outputWidth > 8192 ||
-        outputHeight > 8192 ||
-        outputWidth * outputHeight > 64 * 1024 * 1024
+        outputWidth > MAX_IMAGE_DIMENSION ||
+        outputHeight > MAX_IMAGE_DIMENSION ||
+        outputWidth * outputHeight > MAX_IMAGE_PIXELS
       ) {
         throw new FileValidationError(
           '出力寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
@@ -1346,8 +1394,7 @@ export default function App() {
     } catch (error) {
       setStatus({
         kind: 'error',
-        message:
-          error instanceof Error ? error.message : '画像を書き出せませんでした。',
+        message: userFacingErrorMessage(error, '画像を書き出せませんでした。'),
       })
     } finally {
       endBusy()
@@ -1374,7 +1421,8 @@ export default function App() {
     } else {
       setStatus({
         kind: 'error',
-        message: 'PNG、JPEG、WebPまたはPixelweaveプロジェクトを選択してください。',
+        message:
+          'PNG、JPEG、WebPまたはPixelweaveプロジェクトを選択してください。',
       })
     }
   }
@@ -1409,7 +1457,7 @@ export default function App() {
       }
       if (isEditableTarget(event.target) || activeDialog) return
 
-      const modifier = event.metaKey || event.ctrlKey
+      const modifier = (event.metaKey || event.ctrlKey) && !event.altKey
       const key = event.key.toLowerCase()
       if (modifier && key === 'z') {
         event.preventDefault()
@@ -1429,16 +1477,18 @@ export default function App() {
       } else if (modifier && key === 'x') {
         event.preventDefault()
         runEditorOperation((engine) => engine.cutSelection())
+      } else if (event.metaKey || event.ctrlKey || event.altKey) {
+        return
       } else if (key === 'delete' || key === 'backspace') {
         event.preventDefault()
         engineRef.current?.deleteSelection()
-      } else if (key === 'v') {
+      } else if (!event.shiftKey && key === 'v') {
         activateTool('select')
-      } else if (key === 'b') {
+      } else if (!event.shiftKey && key === 'b') {
         activateTool('brush')
-      } else if (key === 'e') {
+      } else if (!event.shiftKey && key === 'e') {
         activateTool('eraser')
-      } else if (key === 'h') {
+      } else if (!event.shiftKey && key === 'h') {
         activateTool('pan')
       } else if (key === '+' || key === '=') {
         engineRef.current?.zoomIn()
@@ -1455,14 +1505,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [
-    activateTool,
-    activeDialog,
-    redo,
-    runEditorOperation,
-    saveProject,
-    undo,
-  ])
+  }, [activateTool, activeDialog, redo, runEditorOperation, saveProject, undo])
 
   const updateTransform = (
     field: keyof Omit<SelectionTransform, 'id'>,
@@ -1490,7 +1533,9 @@ export default function App() {
         }
       }
       if (!stableRevision) {
-        throw new Error('The document kept changing during update.')
+        throw new Error(
+          '更新処理中も編集内容が変化しました。操作を止めてから再試行してください。',
+        )
       }
       if (!applyServiceWorkerUpdate()) {
         endBusy()
@@ -1498,7 +1543,17 @@ export default function App() {
           kind: 'warning',
           message: '更新用Service Workerが見つかりませんでした。',
         })
+        return
       }
+      updateTimeoutRef.current = window.setTimeout(() => {
+        updateTimeoutRef.current = null
+        endBusy()
+        setStatus({
+          kind: 'warning',
+          message:
+            'アプリの更新を完了できませんでした。編集内容は保持されています。しばらくしてから再試行してください。',
+        })
+      }, SERVICE_WORKER_UPDATE_TIMEOUT)
     } catch {
       endBusy()
       setStatus({
@@ -1558,6 +1613,8 @@ export default function App() {
             className="topbar-button mobile-menu"
             type="button"
             aria-label="メニュー"
+            aria-haspopup="dialog"
+            onClick={() => setActiveDialog('menu')}
           >
             <Menu aria-hidden="true" />
           </button>
@@ -1606,8 +1663,8 @@ export default function App() {
               revisionRef.current += 1
               dirtyRef.current = true
               setDirty(true)
-              const engine = engineRef.current
-              if (engine) scheduleAutosave(engine.snapshot())
+              const snapshot = latestSnapshotRef.current
+              if (snapshot) scheduleAutosave(snapshot)
             }}
           />
           <span>{dirty ? '未保存の変更' : '保存済み'}</span>
@@ -1715,7 +1772,9 @@ export default function App() {
             <span className="sr-only">描画色</span>
             <input
               type="color"
-              value={tool === 'brush' || tool === 'eraser' ? brushColor : shapeColor}
+              value={
+                tool === 'brush' || tool === 'eraser' ? brushColor : shapeColor
+              }
               onChange={(event) => {
                 if (tool === 'brush' || tool === 'eraser') {
                   setBrushColor(event.target.value)
@@ -1761,7 +1820,9 @@ export default function App() {
                     min="1"
                     max="160"
                     value={brushSize}
-                    onChange={(event) => setBrushSize(Number(event.target.value))}
+                    onChange={(event) =>
+                      setBrushSize(Number(event.target.value))
+                    }
                   />
                   <output>{brushSize}px</output>
                 </label>
@@ -1797,7 +1858,9 @@ export default function App() {
                     <span>{label}</span>
                     <input
                       type="number"
-                      min={field === 'width' || field === 'height' ? 1 : undefined}
+                      min={
+                        field === 'width' || field === 'height' ? 1 : undefined
+                      }
                       value={Math.round(selectionTransform[field] * 10) / 10}
                       onChange={(event) =>
                         updateTransform(field, Number(event.target.value))
@@ -2026,7 +2089,9 @@ export default function App() {
                   <label className="opacity-control">
                     <span>
                       不透明度
-                      <output>{Math.round(selectedLayer.opacity * 100)}%</output>
+                      <output>
+                        {Math.round(selectedLayer.opacity * 100)}%
+                      </output>
                     </span>
                     <input
                       type="range"
@@ -2044,104 +2109,106 @@ export default function App() {
                   </label>
                 </div>
               ) : (
-                <p className="muted-callout">レイヤーを選択すると設定を変更できます。</p>
+                <p className="muted-callout">
+                  レイヤーを選択すると設定を変更できます。
+                </p>
               )}
 
               <div className="layer-list" role="list" aria-label="レイヤー">
                 {layers.map((layer) => (
-                    <div
-                      className={`layer-row ${layer.selected ? 'selected' : ''} ${!layer.visible ? 'hidden' : ''}`}
-                      key={layer.id}
-                      role="listitem"
+                  <div
+                    className={`layer-row ${layer.selected ? 'selected' : ''} ${!layer.visible ? 'hidden' : ''}`}
+                    key={layer.id}
+                    role="listitem"
+                  >
+                    <button
+                      className="layer-icon-button"
+                      type="button"
+                      aria-label={layer.visible ? 'レイヤーを隠す' : '表示する'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        engineRef.current?.setLayerVisible(
+                          layer.id,
+                          !layer.visible,
+                        )
+                      }}
                     >
-                      <button
-                        className="layer-icon-button"
-                        type="button"
-                        aria-label={layer.visible ? 'レイヤーを隠す' : '表示する'}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          engineRef.current?.setLayerVisible(
-                            layer.id,
-                            !layer.visible,
-                          )
-                        }}
-                      >
-                        {layer.visible ? (
-                          <Eye aria-hidden="true" />
-                        ) : (
-                          <EyeOff aria-hidden="true" />
-                        )}
-                      </button>
-                      {renamingLayerId === layer.id ? (
-                        <div className="layer-select-area">
-                          <span className="layer-thumbnail">
-                            {layerIcon(layer.type)}
-                          </span>
-                          <input
-                            className="layer-rename-input"
-                            autoFocus
-                            value={renameValue}
-                            aria-label="レイヤー名"
-                            onChange={(event) => setRenameValue(event.target.value)}
-                            onBlur={commitLayerRename}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') commitLayerRename()
-                              if (event.key === 'Escape') setRenamingLayerId(null)
-                            }}
-                            onClick={(event) => event.stopPropagation()}
-                          />
-                        </div>
+                      {layer.visible ? (
+                        <Eye aria-hidden="true" />
                       ) : (
-                        <button
-                          className="layer-select-area"
-                          type="button"
-                          aria-label={`レイヤー「${layer.name}」を選択`}
-                          aria-pressed={layer.selected}
-                          onClick={(event) =>
-                            engineRef.current?.selectLayer(
-                              layer.id,
-                              event.metaKey ||
-                                event.ctrlKey ||
-                                event.shiftKey,
-                            )
-                          }
-                          onDoubleClick={(event) => {
-                            event.stopPropagation()
-                            setRenamingLayerId(layer.id)
-                            setRenameValue(layer.name)
-                          }}
-                        >
-                          <span className="layer-thumbnail">
-                            {layerIcon(layer.type)}
-                          </span>
-                          <span className="layer-name">
-                            <>
-                              <strong>{layer.name}</strong>
-                              <span>{layer.type}</span>
-                            </>
-                          </span>
-                        </button>
+                        <EyeOff aria-hidden="true" />
                       )}
+                    </button>
+                    {renamingLayerId === layer.id ? (
+                      <div className="layer-select-area">
+                        <span className="layer-thumbnail">
+                          {layerIcon(layer.type)}
+                        </span>
+                        <input
+                          className="layer-rename-input"
+                          autoFocus
+                          value={renameValue}
+                          aria-label="レイヤー名"
+                          onChange={(event) =>
+                            setRenameValue(event.target.value)
+                          }
+                          onBlur={commitLayerRename}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') commitLayerRename()
+                            if (event.key === 'Escape') setRenamingLayerId(null)
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      </div>
+                    ) : (
                       <button
-                        className="layer-icon-button"
+                        className="layer-select-area"
                         type="button"
-                        aria-label={layer.locked ? 'ロックを解除' : 'ロック'}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          engineRef.current?.setLayerLocked(
+                        aria-label={`レイヤー「${layer.name}」を選択`}
+                        aria-pressed={layer.selected}
+                        onClick={(event) =>
+                          engineRef.current?.selectLayer(
                             layer.id,
-                            !layer.locked,
+                            event.metaKey || event.ctrlKey || event.shiftKey,
                           )
+                        }
+                        onDoubleClick={(event) => {
+                          event.stopPropagation()
+                          setRenamingLayerId(layer.id)
+                          setRenameValue(layer.name)
                         }}
                       >
-                        {layer.locked ? (
-                          <Lock aria-hidden="true" />
-                        ) : (
-                          <Unlock aria-hidden="true" />
-                        )}
+                        <span className="layer-thumbnail">
+                          {layerIcon(layer.type)}
+                        </span>
+                        <span className="layer-name">
+                          <>
+                            <strong>{layer.name}</strong>
+                            <span>{layer.type}</span>
+                          </>
+                        </span>
                       </button>
-                    </div>
-                  ))}
+                    )}
+                    <button
+                      className="layer-icon-button"
+                      type="button"
+                      aria-label={layer.locked ? 'ロックを解除' : 'ロック'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        engineRef.current?.setLayerLocked(
+                          layer.id,
+                          !layer.locked,
+                        )
+                      }}
+                    >
+                      {layer.locked ? (
+                        <Lock aria-hidden="true" />
+                      ) : (
+                        <Unlock aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                ))}
               </div>
               {layers.length === 0 ? (
                 <div className="panel-empty">
@@ -2156,7 +2223,11 @@ export default function App() {
                 </div>
               ) : null}
 
-              <div className="layer-actions" role="toolbar" aria-label="レイヤー操作">
+              <div
+                className="layer-actions"
+                role="toolbar"
+                aria-label="レイヤー操作"
+              >
                 <button
                   type="button"
                   onClick={() => imageInputRef.current?.click()}
@@ -2169,9 +2240,7 @@ export default function App() {
                   type="button"
                   disabled={!selectedLayer}
                   onClick={() =>
-                    runEditorOperation((engine) =>
-                      engine.duplicateSelection(),
-                    )
+                    runEditorOperation((engine) => engine.duplicateSelection())
                   }
                   aria-label="複製"
                   title="複製"
@@ -2260,7 +2329,9 @@ export default function App() {
                   label="ぼかし"
                   value={filters.blur}
                   min={0}
-                  onChange={(value) => applyFilters({ ...filters, blur: value })}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, blur: value })
+                  }
                 />
                 <label className="toggle-row">
                   <span>
@@ -2309,10 +2380,7 @@ export default function App() {
               </p>
               <ol className="history-list">
                 {[...historyLabels].reverse().map((entry, index) => (
-                  <li
-                    key={entry.id}
-                    className={index === 0 ? 'current' : ''}
-                  >
+                  <li key={entry.id} className={index === 0 ? 'current' : ''}>
                     <span className="history-marker">
                       {index === 0 ? <Check aria-hidden="true" /> : null}
                     </span>
@@ -2399,13 +2467,65 @@ export default function App() {
         </div>
       ) : null}
 
+      {activeDialog === 'menu' ? (
+        <Modal
+          title="ファイルメニュー"
+          description="プロジェクトの作成、読み込み、保存、画像の書き出しを行います。"
+          onClose={() => setActiveDialog(null)}
+        >
+          <div className="modal-form">
+            <button
+              className="secondary-button full-width"
+              type="button"
+              onClick={() => setActiveDialog('new')}
+            >
+              <Plus aria-hidden="true" />
+              新しいキャンバス
+            </button>
+            <button
+              className="secondary-button full-width"
+              type="button"
+              onClick={() => {
+                setActiveDialog(null)
+                projectInputRef.current?.click()
+              }}
+            >
+              <Upload aria-hidden="true" />
+              プロジェクトを開く
+            </button>
+            <button
+              className="secondary-button full-width"
+              type="button"
+              onClick={() => {
+                setActiveDialog(null)
+                void saveProject()
+              }}
+            >
+              <Save aria-hidden="true" />
+              プロジェクトを保存
+            </button>
+            <button
+              className="primary-button full-width"
+              type="button"
+              onClick={() => setActiveDialog('export')}
+            >
+              <Download aria-hidden="true" />
+              画像を書き出す
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
       {activeDialog === 'new' ? (
         <Modal
           title="新しいキャンバス"
           description="未保存の編集がある場合は確認してから切り替えます。新しいキャンバスのサイズを指定してください。"
           onClose={() => setActiveDialog(null)}
         >
-          <form className="modal-form" onSubmit={(event) => void createNewDocument(event)}>
+          <form
+            className="modal-form"
+            onSubmit={(event) => void createNewDocument(event)}
+          >
             <label>
               <span>プロジェクト名</span>
               <input
@@ -2426,7 +2546,7 @@ export default function App() {
                   type="number"
                   required
                   min="1"
-                  max="8192"
+                  max={MAX_IMAGE_DIMENSION}
                   value={newDocument.width}
                   onChange={(event) =>
                     setNewDocument((value) => ({
@@ -2442,7 +2562,7 @@ export default function App() {
                   type="number"
                   required
                   min="1"
-                  max="8192"
+                  max={MAX_IMAGE_DIMENSION}
                   value={newDocument.height}
                   onChange={(event) =>
                     setNewDocument((value) => ({
@@ -2516,7 +2636,9 @@ export default function App() {
                       setExportSettings((value) => ({ ...value, format }))
                     }
                   />
-                  <span>{format === 'jpeg' ? 'JPG' : format.toUpperCase()}</span>
+                  <span>
+                    {format === 'jpeg' ? 'JPG' : format.toUpperCase()}
+                  </span>
                   <small>
                     {format === 'png'
                       ? '透明度・高品質'
@@ -2564,12 +2686,10 @@ export default function App() {
                 <option
                   value="2"
                   disabled={
-                    documentSize.width * 2 > 8192 ||
-                    documentSize.height * 2 > 8192 ||
-                    documentSize.width *
-                      2 *
-                      (documentSize.height * 2) >
-                      64 * 1024 * 1024
+                    documentSize.width * 2 > MAX_IMAGE_DIMENSION ||
+                    documentSize.height * 2 > MAX_IMAGE_DIMENSION ||
+                    documentSize.width * 2 * (documentSize.height * 2) >
+                      MAX_IMAGE_PIXELS
                   }
                 >
                   2×
@@ -2581,7 +2701,8 @@ export default function App() {
               <span>
                 <strong>
                   {Math.round(documentSize.width * exportSettings.multiplier)} ×{' '}
-                  {Math.round(documentSize.height * exportSettings.multiplier)} px
+                  {Math.round(documentSize.height * exportSettings.multiplier)}{' '}
+                  px
                 </strong>
                 <small>
                   {sanitizeFileStem(projectName)}.

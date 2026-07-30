@@ -9,10 +9,7 @@ import {
 } from './types'
 
 export type ProjectFormatErrorCode =
-  | 'invalid-json'
-  | 'invalid-schema'
-  | 'unsupported-version'
-  | 'invalid-app'
+  'invalid-json' | 'invalid-schema' | 'unsupported-version' | 'invalid-app'
 
 /**
  * Error raised when a project cannot safely be opened.

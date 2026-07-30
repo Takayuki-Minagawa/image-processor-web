@@ -1,6 +1,6 @@
 # MVP実装状況
 
-更新日: 2026-07-30
+更新日: 2026-07-31
 
 初期計画のPhase 1〜3から、GitHub Pagesで試せる最初の製品スライスを実装した。Phase 4のうちCI、入力制限、アクセシビリティの基礎、依存監査を含め、タイルレンダラーや全ブラウザの実機試験は後続課題として明示する。計画上の未完了項目は`IMAGE_EDITOR_WORK_PLAN.md`のtask listへ反映済みである。
 
@@ -15,16 +15,16 @@
 
 ## 計画との対応
 
-| 領域 | 実装 | 次の判断ゲート |
-|---|---|---|
-| アプリ基盤 | React、TypeScript、Vite、DOM UI、エラー境界 | 大規模状態管理は利用状況を見て判断 |
-| 描画 | Fabric.js 7 adapter、Canvas2D/WebGL filter backend | 4K/20層ベンチマーク後にタイル/PixiJSを判断 |
-| 履歴 | 上限100件のスナップショット、操作種別ごとのトランザクション、Undo直前flush | 画素量増加時にCommand+tile diffへ移行 |
-| 保存 | version 1 JSON、Data URL内包、runtime validation | ZIPコンテナは実測サイズと互換要件で判断 |
-| 復旧 | OPFS優先、localStorage fallback、世代・revision管理で新しい編集を優先する直列自動保存 | Command journalと複数候補一覧 |
-| 配布 | 原子的precache PWA、GitHub Pages Actions、PR CI、非同期編集gateと更新前flush | CSP/COOP/COEPはWASM導入時に再評価 |
-| 品質 | unit 49件、Playwright 9シナリオ、axe critical/serious 0件、strict build | Safari/Firefox実機、golden画像、性能回帰 |
-| 安全性 | magic byteとデコード前寸法検証、8,192px/64MP、埋込画像合計128MP、100MB project、500 objects、保存/復元共通validator、CSP | fuzz corpusとWorker timeout |
+| 領域       | 実装                                                                                                                     | 次の判断ゲート                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| アプリ基盤 | React、TypeScript、Vite、DOM UI、エラー境界                                                                              | 大規模状態管理は利用状況を見て判断         |
+| 描画       | Fabric.js 7 adapter、Canvas2D/WebGL filter backend                                                                       | 4K/20層ベンチマーク後にタイル/PixiJSを判断 |
+| 履歴       | 上限100件のスナップショット、操作種別ごとのトランザクション、Undo直前flush                                               | 画素量増加時にCommand+tile diffへ移行      |
+| 保存       | version 1 JSON、Data URL内包、runtime validation                                                                         | ZIPコンテナは実測サイズと互換要件で判断    |
+| 復旧       | OPFS優先、localStorage fallback、世代・revision管理で新しい編集を優先する直列自動保存                                    | Command journalと複数候補一覧              |
+| 配布       | 原子的precache PWA、GitHub Pages Actions、PR CI、非同期編集gateと更新前flush                                             | CSP/COOP/COEPはWASM導入時に再評価          |
+| 品質       | unit 60件、Pages本番サブパスPlaywright 14シナリオ、axe critical/serious 0件、Prettier、ESLint、strict build              | Safari/Firefox実機、golden画像、性能回帰   |
+| 安全性     | magic byteとデコード前寸法検証、8,192px/64MP、埋込画像合計128MP、100MB project、500 objects、保存/復元共通validator、CSP | fuzz corpusとWorker timeout                |
 
 ## 意図的に後続へ残す項目
 
@@ -37,10 +37,20 @@
 
 これらは「動作する最小編集製品」を複雑化させるため未完了を隠さず、`IMAGE_EDITOR_WORK_PLAN.md`のPhase 4以降に沿って段階的に進める。
 
-## 2026-07-30 検証記録
+## 2026-07-31 レビュー対応
 
-- `npm test`: 49 tests passed
-- `npm run test:e2e`: Chromium 9 scenarios passed
+- 修飾キー付きショートカット、非同期cut、モバイルメニュー、PWA更新失敗時の操作ロックを修正
+- プロジェクト名変更時の全snapshot生成、レイヤー名取得の反復走査、画像の重複デコードを削減
+- 画像上限、Data URL、寸法照合を共通モジュールへ集約し、UIエラーを日本語化
+- Blob URL解放、離脱警告、貼り付け位置、履歴の循環参照比較、Service Workerのscopeを堅牢化
+- ESLint / PrettierとPages本番サブパスE2EをCI・デプロイ前の必須ゲートへ追加
+
+## 2026-07-31 検証記録
+
+- `npm test`: 60 tests passed
+- `npm run test:e2e`: Chromium 14 scenarios passed
+- `npm run format:check`: passed
+- `npm run lint`: passed
 - axe-core: critical / serious violations 0
 - `npm run build`: strict TypeScript + Vite production build passed
 - GitHub Pages相当の`/image-processor-web/`配下でService Worker制御と全build assetのprecacheを確認
