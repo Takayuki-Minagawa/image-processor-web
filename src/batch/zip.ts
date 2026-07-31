@@ -44,17 +44,19 @@ const updateCrc32 = (
 }
 
 export const normalizeZipEntryName = (name: string): string => {
+  // Control characters are stripped BEFORE the "." / ".." traversal check so
+  // a segment like "..\x00" (which is not literally ".." until the stripped
+  // byte is removed) cannot smuggle a path-traversal segment through.
   const segments = name
     .normalize('NFKC')
     .replaceAll('\\', '/')
     .split('/')
-    .filter((segment) => segment && segment !== '.' && segment !== '..')
     .map((segment) =>
       stripControlCharacters(segment)
         .replace(/[<>:"|?*]/g, '-')
         .slice(0, 120),
     )
-    .filter(Boolean)
+    .filter((segment) => segment && segment !== '.' && segment !== '..')
   const normalized = segments.join('/').slice(0, 512)
   if (!normalized) {
     throw new TypeError('ZIP entry names must contain a safe file name.')

@@ -238,16 +238,20 @@ const applyLevels = (
   const inputRange = inputWhite - inputBlack
   const outputRange = outputWhite - outputBlack
   const inverseGamma = 1 / gamma
+  const lut = new Uint8ClampedArray(256)
+  for (let value = 0; value < 256; value += 1) {
+    const normalized = Math.max(
+      0,
+      Math.min(1, (value - inputBlack) / inputRange),
+    )
+    lut[value] = clampByte(
+      outputBlack + Math.pow(normalized, inverseGamma) * outputRange,
+    )
+  }
   for (let offset = 0; offset < image.data.length; offset += 4) {
-    for (let channel = 0; channel < 3; channel += 1) {
-      const normalized = Math.max(
-        0,
-        Math.min(1, (image.data[offset + channel] - inputBlack) / inputRange),
-      )
-      output.data[offset + channel] = clampByte(
-        outputBlack + Math.pow(normalized, inverseGamma) * outputRange,
-      )
-    }
+    output.data[offset] = lut[image.data[offset]]
+    output.data[offset + 1] = lut[image.data[offset + 1]]
+    output.data[offset + 2] = lut[image.data[offset + 2]]
   }
   return output
 }

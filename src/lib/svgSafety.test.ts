@@ -113,6 +113,57 @@ describe('sanitizeSvg', () => {
     ).toBe(false)
   })
 
+  it('strips a reference attribute even when smuggled through a rebound namespace prefix', () => {
+    const document = parse(
+      sanitizeSvgString(`
+        <svg xmlns="http://www.w3.org/2000/svg"
+             xmlns:x="http://www.w3.org/1999/xlink"
+             viewBox="0 0 100 100">
+          <image id="renamed-prefix" x:href="https://example.test/track.png"/>
+        </svg>
+      `),
+    )
+
+    expect(
+      document
+        .querySelector('#renamed-prefix')
+        ?.getAttributeNS('http://www.w3.org/1999/xlink', 'href'),
+    ).toBeNull()
+  })
+
+  it('rejects a <use> reference chain that would expand exponentially', () => {
+    const groupCount = 40
+    const groups = Array.from(
+      { length: groupCount },
+      (_, index) =>
+        `<g id="g${index}"><rect width="1" height="1"/>${
+          index === 0
+            ? ''
+            : `<use href="#g${index - 1}"/><use href="#g${index - 1}"/>`
+        }</g>`,
+    ).join('')
+
+    expect(() =>
+      sanitizeSvg(`
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          ${groups}
+          <use href="#g${groupCount - 1}"/>
+        </svg>
+      `),
+    ).toThrow(/expand|resolve/i)
+  })
+
+  it('rejects a cyclic <use> reference instead of recursing forever', () => {
+    expect(() =>
+      sanitizeSvg(`
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          <g id="a"><use href="#b"/></g>
+          <g id="b"><use href="#a"/></g>
+        </svg>
+      `),
+    ).toThrow(/deeply nested or cyclic/i)
+  })
+
   it('removes embedded rasters with mismatched, malformed, or oversized headers', () => {
     const oversized = pngDataUrl(8_193, 1)
     const mismatched = pngDataUrl(1, 1, 'image/jpeg')

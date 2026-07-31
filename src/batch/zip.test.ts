@@ -46,6 +46,13 @@ describe('stored ZIP writer', () => {
     ).toThrow(/Duplicate/)
   })
 
+  it('does not reconstitute a ".." segment once control characters inside it are stripped', () => {
+    expect(normalizeZipEntryName('..\x00/..\x00/etc/passwd')).not.toMatch(
+      /^\.\.\//,
+    )
+    expect(normalizeZipEntryName('..\x00/..\x00/etc/passwd')).toBe('etc/passwd')
+  })
+
   it('rejects empty archives', () => {
     expect(() => createStoredZip([])).toThrow(/require/)
   })

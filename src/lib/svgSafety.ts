@@ -69,6 +69,19 @@ const REFERENCE_ATTRIBUTES = new Set([
   'xml:base',
 ])
 
+/**
+ * Matched against Attr.localName (the prefix-independent part) so a
+ * rebound namespace prefix, e.g. `xmlns:x="...xlink" x:href="http://..."`,
+ * is still treated as a reference attribute instead of falling through to
+ * the generic value checks below.
+ */
+const REFERENCE_ATTRIBUTE_LOCAL_NAMES = new Set([
+  'href',
+  'src',
+  'srcset',
+  'base',
+])
+
 const UNSAFE_CSS = /(?:@import|expression\s*\(|-moz-binding|behavior\s*:)/i
 const URL_REFERENCE = /url\s*\(\s*(['"]?)(.*?)\1\s*\)/giu
 const RASTER_DATA_URL =
@@ -345,6 +358,74 @@ const sanitizeStyleAttribute = (value: string): string | null => {
   return safeDeclarations.length > 0 ? safeDeclarations.join('; ') : null
 }
 
+const MAX_USE_REFERENCE_DEPTH = 256
+
+/**
+ * `<use href="#id">` clones the referenced subtree. Because a clone can
+ * itself contain `<use>` elements pointing at earlier siblings, a document
+ * with only a few thousand literal elements can resolve to an exponential
+ * number of nodes (a "billion laughs" style bomb) even though it passes the
+ * flat element-count check. This walks the reference graph with memoized,
+ * cycle-safe weights and rejects documents whose *resolved* element count
+ * would exceed `limit`, without ever materializing the expansion.
+ */
+const assertBoundedUseExpansion = (root: Element, limit: number): void => {
+  const byId = new Map<string, Element>()
+  for (const element of [root, ...root.querySelectorAll('*')]) {
+    const id = element.getAttribute('id')
+    if (id !== null && !byId.has(id)) {
+      byId.set(id, element)
+    }
+  }
+
+  const memo = new Map<Element, number>()
+  const visiting = new Set<Element>()
+
+  const weightOf = (element: Element, depth: number): number => {
+    const cached = memo.get(element)
+    if (cached !== undefined) {
+      return cached
+    }
+    if (depth > MAX_USE_REFERENCE_DEPTH || visiting.has(element)) {
+      throw new SvgSafetyError(
+        'svg-element-limit',
+        'SVG <use> references are too deeply nested or cyclic.',
+      )
+    }
+    visiting.add(element)
+
+    let total = 1
+    if (localName(element.localName) === 'use') {
+      const href =
+        element.getAttribute('href') ?? element.getAttribute('xlink:href')
+      const targetId =
+        href !== null && href.trim().startsWith('#')
+          ? href.trim().slice(1)
+          : null
+      const target = targetId !== null ? byId.get(targetId) : undefined
+      if (target !== undefined) {
+        total += weightOf(target, depth + 1)
+      }
+    } else {
+      for (const child of Array.from(element.children)) {
+        total += weightOf(child, depth + 1)
+      }
+    }
+
+    visiting.delete(element)
+    if (total > limit) {
+      throw new SvgSafetyError(
+        'svg-element-limit',
+        `SVG <use> references may not resolve to more than ${limit} elements.`,
+      )
+    }
+    memo.set(element, total)
+    return total
+  }
+
+  weightOf(root, 0)
+}
+
 const parseLength = (value: string | null): number | null => {
   if (value === null || value.trim() === '') {
     return null
@@ -521,6 +602,7 @@ export function sanitizeSvg(
 
     for (const attribute of [...element.attributes]) {
       const attributeName = localName(attribute.name)
+      const attributeLocalName = localName(attribute.localName)
       const value = attribute.value
       if (value.length > maxAttributeLength) {
         throw new SvgSafetyError(
@@ -532,7 +614,8 @@ export function sanitizeSvg(
       let sanitizedValue: string | null = value
       if (
         attributeName.startsWith('on') ||
-        REFERENCE_ATTRIBUTES.has(attributeName)
+        REFERENCE_ATTRIBUTES.has(attributeName) ||
+        REFERENCE_ATTRIBUTE_LOCAL_NAMES.has(attributeLocalName)
       ) {
         sanitizedValue =
           !attributeName.startsWith('on') &&
@@ -563,6 +646,8 @@ export function sanitizeSvg(
       }
     }
   }
+
+  assertBoundedUseExpansion(root, maxElements)
 
   const dimensions = readDimensions(root)
   assertSafeDimensions(dimensions, maxDimension, maxPixels)
