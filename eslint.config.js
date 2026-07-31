@@ -44,7 +44,12 @@ export default [
     ...reactRefresh.configs.vite,
   },
   {
-    files: ['e2e/**/*.ts', '*.config.{js,mjs,ts}', 'vite.config.ts'],
+    files: [
+      'e2e/**/*.ts',
+      'scripts/**/*.mjs',
+      '*.config.{js,mjs,ts}',
+      'vite.config.ts',
+    ],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -62,7 +67,7 @@ export default [
     },
   },
   {
-    files: ['src/lib/files.ts'],
+    files: ['src/lib/fileCore.ts', 'src/lib/files.ts'],
     rules: {
       // The control range is intentional: filenames are sanitized before save.
       'no-control-regex': 'off',

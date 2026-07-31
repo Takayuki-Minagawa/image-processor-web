@@ -4,17 +4,15 @@ import {
   imageDimensionsAreSafe,
   SUPPORTED_IMAGE_MIME_TYPES,
 } from './imageSafety'
+import { FileValidationError } from './fileCore'
 
 const IMAGE_TYPES = new Set<string>(SUPPORTED_IMAGE_MIME_TYPES)
 
-export const MAX_PROJECT_BYTES = 100 * 1024 * 1024
-
-export class FileValidationError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'FileValidationError'
-  }
-}
+export {
+  FileValidationError,
+  MAX_PROJECT_BYTES,
+  sanitizeFileStem,
+} from './fileCore'
 
 const matchesPng = (bytes: Uint8Array): boolean =>
   bytes.length >= 8 &&
@@ -88,19 +86,6 @@ export function readFileAsDataUrl(file: Blob): Promise<string> {
     })
     reader.readAsDataURL(file)
   })
-}
-
-export function sanitizeFileStem(value: string): string {
-  const normalized = value
-    .normalize('NFKC')
-    .replace(/\.[^.]+$/, '')
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '')
-    .slice(0, 80)
-
-  return normalized || 'untitled'
 }
 
 export function downloadUrl(url: string, fileName: string): void {

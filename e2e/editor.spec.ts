@@ -236,7 +236,7 @@ test.describe('Pixelweave editor', () => {
 
     await page.keyboard.press('Shift+Tab')
     await expect(
-      menu.getByRole('button', { name: '画像を書き出す' }),
+      menu.getByRole('button', { name: '拡張ツールを開く' }),
     ).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(closeMenu).toBeFocused()
@@ -510,9 +510,7 @@ test.describe('Pixelweave editor', () => {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
       'base64',
     )
-    const imageInput = page.locator(
-      'input[type="file"][accept="image/png,image/jpeg,image/webp"]',
-    )
+    const imageInput = page.getByLabel('画像ファイルを選択')
 
     await imageInput.setInputFiles({
       name: 'sample.png',
@@ -615,13 +613,20 @@ test.describe('Pixelweave editor', () => {
     await page.evaluate(() => {
       let finishWrite: (() => void) | undefined
       Object.assign(globalThis, {
+        __pixelweaveWritePending: false,
         __finishPixelweaveWrite: () => finishWrite?.(),
         showSaveFilePicker: async () => ({
           createWritable: async () => ({
-            write: async () =>
-              new Promise<void>((resolve) => {
+            write: async () => {
+              ;(
+                globalThis as typeof globalThis & {
+                  __pixelweaveWritePending?: boolean
+                }
+              ).__pixelweaveWritePending = true
+              return new Promise<void>((resolve) => {
                 finishWrite = resolve
-              }),
+              })
+            },
             close: async () => undefined,
           }),
         }),
@@ -639,6 +644,14 @@ test.describe('Pixelweave editor', () => {
         .getByRole('listitem', { includeHidden: true }),
     ).toHaveCount(1)
 
+    await page.waitForFunction(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __pixelweaveWritePending?: boolean
+          }
+        ).__pixelweaveWritePending === true,
+    )
     await page.evaluate(() => {
       ;(
         globalThis as typeof globalThis & {

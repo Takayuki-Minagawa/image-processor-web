@@ -13,7 +13,8 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Keep the 4K Worker and image-processing acceptance tests deterministic.
+  workers: 1,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL: previewBaseUrl,

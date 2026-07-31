@@ -75,6 +75,11 @@ test.describe('GitHub Pages production deployment', () => {
         path.startsWith(deploymentState.scopePath),
       ),
     ).toBe(true)
+    expect(
+      deploymentState.cachedPaths.some((path) =>
+        /\/ort(?:[.-]).*\.(?:js|wasm)$/u.test(path),
+      ),
+    ).toBe(false)
   })
 
   test('キャッシュ欠損時のオフラインnavigationを503 Responseで返す', async ({

@@ -13,11 +13,38 @@ export interface JsonObject {
 }
 
 export const PROJECT_APP_ID = 'image-processor-web' as const
-export const PROJECT_SCHEMA_VERSION = 1 as const
+export const LEGACY_PROJECT_SCHEMA_VERSION = 1 as const
+export const PROJECT_SCHEMA_VERSION = 2 as const
 
 export interface ProjectCanvasSize {
   width: number
   height: number
+}
+
+export interface ProjectGuide {
+  axis: 'x' | 'y'
+  position: number
+}
+
+export interface EncodedSelectionMask {
+  width: number
+  height: number
+  encoding: 'rle-base64'
+  data: string
+}
+
+/**
+ * Renderer-independent editing state introduced with schema version 2.
+ *
+ * Large selection masks are stored with a bounded lossless codec instead of
+ * being expanded into Fabric.js JSON. Additional JSON-compatible keys remain
+ * available for forward-compatible editor features.
+ */
+export interface ProjectEditorState {
+  guides: ProjectGuide[]
+  snapTolerance: number
+  selectionMask?: EncodedSelectionMask
+  [key: string]: JsonValue | ProjectGuide[] | EncodedSelectionMask | undefined
 }
 
 /**
@@ -45,6 +72,7 @@ export interface ProjectDocument {
   schemaVersion: typeof PROJECT_SCHEMA_VERSION
   canvasSize: ProjectCanvasSize
   fabricCanvas: JsonObject
+  editorState: ProjectEditorState
   metadata: ProjectMetadata
   updatedAt: string
 }
