@@ -1,0 +1,28 @@
+{
+  "appId": "image-processor-web",
+  "schemaVersion": 1,
+  "canvasSize": {
+    "width": 320,
+    "height": 180
+  },
+  "fabricCanvas": {
+    "version": "7.4.0",
+    "objects": [
+      {
+        "type": "Rect",
+        "left": 12,
+        "top": 24,
+        "width": 80,
+        "height": 40,
+        "fill": "#6757e8",
+        "visible": true
+      }
+    ]
+  },
+  "metadata": {
+    "name": "Version 1 golden project",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "sourceFileName": "legacy.png"
+  },
+  "updatedAt": "2026-01-02T03:04:05.000Z"
+}

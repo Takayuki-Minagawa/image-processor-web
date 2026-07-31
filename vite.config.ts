@@ -7,6 +7,8 @@ const repositoryName =
   process.env.GITHUB_REPOSITORY?.split('/')[1] ?? 'image-processor-web'
 const isGitHubPages = process.env.GITHUB_ACTIONS === 'true'
 const buildId = process.env.GITHUB_SHA?.slice(0, 12) ?? Date.now().toString(36)
+const isDeferredOnnxRuntimeAsset = (file: string): boolean =>
+  /(?:^|\/)ort(?:[.-]).*\.(?:js|wasm)$/u.test(file)
 
 const listFiles = async (
   directory: string,
@@ -37,7 +39,9 @@ export default defineConfig({
         const serviceWorkerPath = resolve(outputDirectory, 'sw.js')
         const source = await readFile(serviceWorkerPath, 'utf8')
         const precacheUrls = (await listFiles(outputDirectory))
-          .filter((file) => file !== 'sw.js')
+          .filter(
+            (file) => file !== 'sw.js' && !isDeferredOnnxRuntimeAsset(file),
+          )
           .sort()
           .map((file) => `./${file}`)
         await writeFile(
@@ -52,7 +56,19 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        passes: 3,
+      },
+    },
     chunkSizeWarningLimit: 900,
+  },
+  worker: {
+    // The background-removal Worker lazy-loads ONNX Runtime backends.
+    // ES-module Workers are required for Rollup to preserve those chunks.
+    format: 'es',
   },
   test: {
     environment: 'jsdom',

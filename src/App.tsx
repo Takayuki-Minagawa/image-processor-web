@@ -1,63 +1,45 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
   type ReactNode,
 } from 'react'
 import {
-  AppWindow,
   ArrowDown,
   ArrowUp,
-  Blend,
   Brush,
-  Check,
-  Circle,
-  Cloud,
-  CloudOff,
   Copy,
-  Crop,
   Download,
   Eraser,
   Eye,
   EyeOff,
-  FileImage,
-  FlipHorizontal2,
-  FlipVertical2,
   Hand,
-  HelpCircle,
   History as HistoryIcon,
-  ImagePlus,
   Layers3,
-  Lock,
   Maximize2,
-  Menu,
   MousePointer2,
-  PanelRightClose,
-  PanelRightOpen,
   Plus,
   Redo2,
-  RotateCw,
   Save,
   SlidersHorizontal,
   Sparkles,
-  Square,
   Trash2,
   Type,
   Undo2,
-  Unlock,
-  Upload,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
 import {
+  DEFAULT_IMAGE_FILTER_SETTINGS,
   FabricEditorEngine,
   type EditorChangeReason,
   type EditorSnapshot,
@@ -69,29 +51,62 @@ import {
   type SelectionTransform,
 } from './editor/fabricEngine'
 import { AsyncOperationGate } from './editor/asyncOperationGate'
-import { createAutosaveRepository } from './editor/autosave'
+import type { AutosaveRepository } from './editor/autosave'
 import { History } from './editor/history'
-import {
-  createProjectDocument,
-  parseProject,
-  serializeProject,
-} from './editor/project'
+import type {
+  AutomationFilter,
+  AutomationCommand,
+  CommandDispatcher,
+  LocalMacroRepository,
+  MacroRecorder,
+  MacroRepositoryEntry,
+} from './automation'
+import type {
+  BatchController,
+  BatchFailure,
+  BatchOutputDestination,
+  BatchProgress,
+  FileSystemDirectoryHandleLike,
+  IconExportPreset,
+  ImagePipelineClient,
+  LocalIconPresetRepository,
+  StoredZipEntry,
+} from './batch'
 import { assertRestorableEditorSnapshot } from './editor/snapshotValidation'
 import type { JsonObject, ProjectDocument } from './editor/types'
 import {
   FileValidationError,
   MAX_PROJECT_BYTES,
-  downloadText,
-  downloadUrl,
-  readFileAsDataUrl,
   sanitizeFileStem,
-  validateImageHeader,
-} from './lib/files'
+} from './lib/fileCore'
 import { MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from './lib/imageSafety'
-import { applyServiceWorkerUpdate, getPwaState, subscribePwaState } from './pwa'
+import type {
+  BatchTransformRequest,
+  IconExportRequest,
+  MacroExportRequest,
+  MacroImportRequest,
+  MacroReplayRequest,
+} from './components/AutomationBatchPanel'
+import type { SelectionMask } from './selection/mask'
+import type { SelectionFilterClient } from './editor/filters/selectionFilterClient'
+import type { SelectionFilterProgress } from './editor/filters/selectionFilter'
+import type { FilterOperation } from './editor/filters/types'
+import type { EditorScriptCommand } from './scripting/types'
+
+const LogoGeneratorPanel = lazy(async () => ({
+  default: (await import('./components/LogoGeneratorPanel')).LogoGeneratorPanel,
+}))
+const AutomationBatchPanel = lazy(
+  () => import('./components/AutomationBatchPanel'),
+)
+const AdvancedStudioPanel = lazy(async () => ({
+  default: (await import('./components/AdvancedStudioPanel'))
+    .AdvancedStudioPanel,
+}))
 
 type InspectorTab = 'layers' | 'adjustments' | 'history'
-type DialogName = 'menu' | 'new' | 'export' | 'shortcuts' | null
+type DialogName = 'menu' | 'new' | 'export' | 'studio' | 'shortcuts' | null
+type StudioTab = 'logo' | 'automation' | 'advanced'
 
 interface HistoryLabel {
   id: number
@@ -116,11 +131,16 @@ type WindowWithSavePicker = Window & {
   }) => Promise<SaveFileHandleLike>
 }
 
+type WindowWithDirectoryPicker = Window & {
+  showDirectoryPicker?: () => Promise<FileSystemDirectoryHandleLike>
+}
+
 const DEFAULT_WIDTH = 1280
 const DEFAULT_HEIGHT = 720
 const AUTOSAVE_DELAY = 1200
 const HISTORY_DELAY = 280
 const SERVICE_WORKER_UPDATE_TIMEOUT = 10_000
+const APP_VERSION = '0.1.0'
 const DEBOUNCED_CHANGE_REASONS = new Set<EditorChangeReason>([
   'object-modified',
   'text-changed',
@@ -128,13 +148,14 @@ const DEBOUNCED_CHANGE_REASONS = new Set<EditorChangeReason>([
   'filter',
 ])
 
-const DEFAULT_FILTERS: Required<ImageFilterSettings> = {
-  brightness: 0,
-  contrast: 0,
-  saturation: 0,
-  hue: 0,
-  blur: 0,
-  grayscale: false,
+const DEFAULT_FILTERS = DEFAULT_IMAGE_FILTER_SETTINGS
+
+function Glyph({ children }: { children: ReactNode }) {
+  return (
+    <span className="ui-glyph" aria-hidden="true">
+      {children}
+    </span>
+  )
 }
 
 const CHANGE_LABELS: Record<EditorChangeReason, string> = {
@@ -151,6 +172,17 @@ const CHANGE_LABELS: Record<EditorChangeReason, string> = {
   duplicate: 'レイヤーを複製',
   cut: '選択範囲を切り取り',
   paste: '選択範囲を貼り付け',
+  guide: 'ガイドを変更',
+  'selection-mask': '選択範囲を変更',
+  'pixel-delete': '選択範囲のピクセルを削除',
+  alignment: 'オブジェクトを整列',
+  'text-style': 'テキスト装飾を変更',
+  'svg-import': 'SVGを追加',
+  'adjustment-layer': '調整レイヤーを変更',
+  logo: 'ロゴを追加',
+  macro: 'マクロを実行',
+  script: 'スクリプトを実行',
+  'background-removal': '背景を除去',
 }
 
 const TOOL_ITEMS: Array<{
@@ -197,6 +229,34 @@ function projectToSnapshot(project: ProjectDocument): EditorSnapshot {
     json: project.fabricCanvas as unknown as Record<string, unknown>,
     width: project.canvasSize.width,
     height: project.canvasSize.height,
+    editorState: project.editorState,
+  }
+}
+
+function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
+  const separator = dataUrl.indexOf(',')
+  if (separator < 0 || !dataUrl.slice(0, separator).includes(';base64')) {
+    throw new TypeError('書き出し画像のData URLが不正です。')
+  }
+  const binary = atob(dataUrl.slice(separator + 1))
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes.buffer
+}
+
+async function downloadArrayBuffer(
+  data: ArrayBuffer,
+  fileName: string,
+  type: string,
+): Promise<void> {
+  const { downloadUrl } = await import('./lib/files')
+  const url = URL.createObjectURL(new Blob([data], { type }))
+  try {
+    downloadUrl(url, fileName)
+  } finally {
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 }
 
@@ -313,15 +373,17 @@ function userFacingErrorMessage(error: unknown, fallback: string): string {
 }
 
 function layerIcon(type: string): ReactNode {
-  if (type === 'image') return <FileImage aria-hidden="true" />
+  if (type === 'adjustment') return <SlidersHorizontal aria-hidden="true" />
+  if (type === 'svg' || type === 'logo') return <Sparkles aria-hidden="true" />
+  if (type === 'image') return <Glyph>▧</Glyph>
   if (type === 'i-text' || type === 'text' || type === 'textbox') {
     return <Type aria-hidden="true" />
   }
   if (type === 'ellipse' || type === 'circle') {
-    return <Circle aria-hidden="true" />
+    return <Glyph>●</Glyph>
   }
   if (type === 'path') return <Brush aria-hidden="true" />
-  return <Square aria-hidden="true" />
+  return <Glyph>■</Glyph>
 }
 
 function Modal({
@@ -329,11 +391,13 @@ function Modal({
   description,
   children,
   onClose,
+  wide = false,
 }: {
   title: string
   description?: string
   children: ReactNode
   onClose: () => void
+  wide?: boolean
 }) {
   const titleId = useId()
   const descriptionId = `${titleId}-description`
@@ -407,7 +471,7 @@ function Modal({
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="modal"
+        className={`modal${wide ? ' modal-wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -478,8 +542,20 @@ export default function App() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const projectInputRef = useRef<HTMLInputElement>(null)
   const engineRef = useRef<FabricEditorEngine | null>(null)
+  const automationDispatcherRef = useRef<CommandDispatcher | null>(null)
+  const macroRecorderRef = useRef<MacroRecorder | null>(null)
+  const macroRepositoryRef = useRef<LocalMacroRepository | null>(null)
+  const automationInitializationRef = useRef<Promise<void> | null>(null)
+  const automationDisposersRef = useRef<VoidFunction[]>([])
+  const iconPresetRepositoryRef = useRef<LocalIconPresetRepository | null>(null)
+  const batchModuleRef = useRef<Promise<typeof import('./batch')> | null>(null)
+  const imagePipelineClientRef = useRef<ImagePipelineClient | null>(null)
+  const selectionFilterClientRef = useRef<SelectionFilterClient | null>(null)
+  const selectionFilterAbortRef = useRef<AbortController | null>(null)
+  const batchControllerRef = useRef<BatchController | null>(null)
+  const batchOutputAbortRef = useRef<AbortController | null>(null)
   const historyRef = useRef(new History<EditorSnapshot>({ limit: 100 }))
-  const autosaveRef = useRef(createAutosaveRepository())
+  const autosaveRef = useRef<Promise<AutosaveRepository> | null>(null)
   const historyTimerRef = useRef<number | null>(null)
   const autosaveTimerRef = useRef<number | null>(null)
   const pendingAutosaveRef = useRef<{
@@ -519,6 +595,7 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [selectionTransform, setSelectionTransform] =
     useState<SelectionTransform | null>(null)
+  const [selectionMask, setSelectionMask] = useState<SelectionMask>()
   const [zoom, setZoom] = useState(1)
   const [documentSize, setDocumentSize] = useState({
     width: DEFAULT_WIDTH,
@@ -530,9 +607,14 @@ export default function App() {
   const [shapeColor, setShapeColor] = useState('#7c6cff')
   const [filters, setFilters] =
     useState<Required<ImageFilterSettings>>(DEFAULT_FILTERS)
+  const [filterSelectionOnly, setFilterSelectionOnly] = useState(false)
+  const [selectionFilterRunning, setSelectionFilterRunning] = useState(false)
+  const [selectionFilterProgress, setSelectionFilterProgress] =
+    useState<SelectionFilterProgress>()
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [activeDialog, setActiveDialog] = useState<DialogName>(null)
+  const [studioTab, setStudioTab] = useState<StudioTab>('logo')
   const [projectName, setProjectName] = useState('無題のデザイン')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -555,6 +637,26 @@ export default function App() {
   const [historyLabels, setHistoryLabels] = useState<HistoryLabel[]>([
     { id: 0, label: '新規ドキュメント', time: nowLabel() },
   ])
+  const [savedMacros, setSavedMacros] = useState<MacroRepositoryEntry[]>([])
+  const [macroRecording, setMacroRecording] = useState(false)
+  const [recordedCommandCount, setRecordedCommandCount] = useState(0)
+  const [batchRunning, setBatchRunning] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<BatchProgress>()
+  const [batchFailures, setBatchFailures] = useState<BatchFailure[]>([])
+  const [userIconPresets, setUserIconPresets] = useState<IconExportPreset[]>([])
+  const [quickAutomation, setQuickAutomation] = useState<{
+    width: number
+    height: number
+    filter: AutomationFilter
+    filterValue: number
+    watermark: string
+  }>({
+    width: DEFAULT_WIDTH,
+    height: DEFAULT_HEIGHT,
+    filter: 'contrast',
+    filterValue: 0.15,
+    watermark: 'Pixelweave',
+  })
   const [renamingLayerId, setRenamingLayerId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [newDocument, setNewDocument] = useState({
@@ -563,17 +665,37 @@ export default function App() {
     height: DEFAULT_HEIGHT,
   })
   const [exportSettings, setExportSettings] = useState<{
-    format: ExportImageFormat
+    format: ExportImageFormat | 'svg'
     quality: number
     multiplier: number
-  }>({ format: 'png', quality: 0.92, multiplier: 1 })
+    svgScope: 'document' | 'selection'
+  }>({
+    format: 'png',
+    quality: 0.92,
+    multiplier: 1,
+    svgScope: 'document',
+  })
 
-  const pwaState = useSyncExternalStore(
-    subscribePwaState,
-    getPwaState,
-    getPwaState,
-  )
+  const [pwaState, setPwaState] = useState({
+    offlineReady: false,
+    updateAvailable: false,
+  })
   const updateAvailable = pwaState.updateAvailable && !updateDismissed
+
+  useEffect(() => {
+    let active = true
+    let unsubscribe: VoidFunction | undefined
+    void import('./pwa').then(({ getPwaState, subscribePwaState }) => {
+      if (!active) return
+      const refresh = (): void => setPwaState(getPwaState())
+      refresh()
+      unsubscribe = subscribePwaState(refresh)
+    })
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     projectNameRef.current = projectName
@@ -655,9 +777,377 @@ export default function App() {
     [beginBusy, endBusy],
   )
 
+  const ensureAutomationRuntime = useCallback(async (): Promise<void> => {
+    if (automationDispatcherRef.current && macroRecorderRef.current) return
+    automationInitializationRef.current ??= Promise.all([
+      import('./automation'),
+      import('./editor/automationAdapter'),
+    ])
+      .then(([automation, { executeEditorAutomationCommand }]) => {
+        const engine = engineRef.current
+        if (!engine) {
+          throw new Error('自動化コマンドの準備ができていません。')
+        }
+        const dispatcher = new automation.CommandDispatcher(
+          (command, context) =>
+            executeEditorAutomationCommand(engine, command, context),
+        )
+        const recorder = new automation.MacroRecorder()
+        automationDispatcherRef.current = dispatcher
+        macroRecorderRef.current = recorder
+        automationDisposersRef.current = [
+          recorder.attach(dispatcher),
+          dispatcher.subscribe(() => {
+            setRecordedCommandCount(recorder.commandCount)
+          }),
+        ]
+        try {
+          macroRepositoryRef.current = new automation.LocalMacroRepository(
+            window.localStorage,
+          )
+          setSavedMacros(macroRepositoryRef.current.list())
+        } catch {
+          setStatus({
+            kind: 'warning',
+            message:
+              'ブラウザーの保存領域を利用できないため、マクロはこのセッションだけ有効です。',
+          })
+        }
+      })
+      .catch((error: unknown) => {
+        automationInitializationRef.current = null
+        throw error
+      })
+    await automationInitializationRef.current
+  }, [])
+
+  const dispatchAutomationCommand = useCallback(
+    async (command: AutomationCommand): Promise<void> => {
+      await ensureAutomationRuntime()
+      const dispatcher = automationDispatcherRef.current
+      if (!dispatcher) {
+        throw new Error('自動化コマンドの準備ができていません。')
+      }
+      await dispatcher.dispatch(command, { origin: 'user' })
+    },
+    [ensureAutomationRuntime],
+  )
+
+  const runQuickCommand = useCallback(
+    (command: AutomationCommand): void => {
+      void dispatchAutomationCommand(command).catch((error: unknown) => {
+        setStatus({
+          kind: 'error',
+          message: userFacingErrorMessage(
+            error,
+            'クイック操作を完了できませんでした。',
+          ),
+        })
+      })
+    },
+    [dispatchAutomationCommand],
+  )
+
+  const startMacroRecording = useCallback(
+    async (name: string): Promise<void> => {
+      await ensureAutomationRuntime()
+      const recorder = macroRecorderRef.current
+      if (!recorder) {
+        throw new Error('マクロ記録の準備ができていません。')
+      }
+      const id = `macro-${crypto.randomUUID()}`
+      recorder.start({
+        id,
+        name,
+        appVersion: APP_VERSION,
+      })
+      setRecordedCommandCount(0)
+      setMacroRecording(true)
+    },
+    [ensureAutomationRuntime],
+  )
+
+  const stopMacroRecording = useCallback(async (): Promise<void> => {
+    await ensureAutomationRuntime()
+    const recorder = macroRecorderRef.current
+    if (!recorder) {
+      throw new Error('マクロ記録の準備ができていません。')
+    }
+    const macro = recorder.stop()
+    macroRepositoryRef.current?.save(macro)
+    setSavedMacros((current) => {
+      const retained = current.filter(
+        ({ macro: entry }) => entry.id !== macro.id,
+      )
+      return [{ macro, diagnostics: [] }, ...retained]
+    })
+    setRecordedCommandCount(0)
+    setMacroRecording(false)
+  }, [ensureAutomationRuntime])
+
+  const replayMacro = useCallback(
+    async ({ macro, parameters }: MacroReplayRequest): Promise<void> => {
+      const engine = engineRef.current
+      await ensureAutomationRuntime()
+      const dispatcher = automationDispatcherRef.current
+      if (!engine || !dispatcher) {
+        throw new Error('マクロを再生する準備ができていません。')
+      }
+      const { resolveMacroParameters } = await import('./automation')
+      const commands = resolveMacroParameters(macro, parameters)
+      const aliases = new Map<string, unknown>()
+      beginBusy()
+      try {
+        await editorOperationGateRef.current.track(
+          engine.runAtomic('macro', async () => {
+            for (const command of commands) {
+              await dispatcher.dispatch(command, {
+                origin: 'replay',
+                resultAliases: aliases,
+              })
+            }
+          }),
+        )
+      } finally {
+        endBusy()
+      }
+    },
+    [beginBusy, endBusy, ensureAutomationRuntime],
+  )
+
+  const importMacro = useCallback(
+    async ({ parsed }: MacroImportRequest): Promise<void> => {
+      await ensureAutomationRuntime()
+      macroRepositoryRef.current?.save(parsed.macro)
+      setSavedMacros((current) => {
+        const retained = current.filter(
+          ({ macro }) => macro.id !== parsed.macro.id,
+        )
+        return [parsed, ...retained]
+      })
+      if (parsed.diagnostics.length > 0) {
+        setStatus({
+          kind: 'warning',
+          message: `${parsed.diagnostics.length}件の未知または不正なコマンドを安全にスキップしました。`,
+        })
+      }
+    },
+    [ensureAutomationRuntime],
+  )
+
+  const exportMacro = useCallback(
+    async ({ fileName, source }: MacroExportRequest): Promise<void> => {
+      const { downloadText } = await import('./lib/files')
+      downloadText(source, fileName, 'application/json')
+    },
+    [],
+  )
+
+  const getBatchModule = useCallback((): Promise<typeof import('./batch')> => {
+    batchModuleRef.current ??= import('./batch')
+    return batchModuleRef.current
+  }, [])
+
+  const ensureIconPresetRepository = useCallback(async (): Promise<void> => {
+    if (iconPresetRepositoryRef.current) return
+    const { LocalIconPresetRepository } = await getBatchModule()
+    try {
+      iconPresetRepositoryRef.current = new LocalIconPresetRepository(
+        window.localStorage,
+      )
+      setUserIconPresets(iconPresetRepositoryRef.current.listUser())
+    } catch {
+      setStatus({
+        kind: 'warning',
+        message:
+          'ブラウザーの保存領域を利用できないため、アイコンプリセットはこのセッションだけ有効です。',
+      })
+    }
+  }, [getBatchModule])
+
+  const getImagePipeline =
+    useCallback(async (): Promise<ImagePipelineClient> => {
+      if (!imagePipelineClientRef.current) {
+        const { ImagePipelineClient } = await getBatchModule()
+        imagePipelineClientRef.current = new ImagePipelineClient()
+      }
+      return imagePipelineClientRef.current
+    }, [getBatchModule])
+
+  const chooseOutputDestination = useCallback(
+    async (
+      mode: 'auto' | 'directory' | 'zip',
+    ): Promise<BatchOutputDestination> => {
+      const { chooseBatchOutputDestination } = await getBatchModule()
+      const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker
+      return chooseBatchOutputDestination({
+        mode,
+        ...(picker ? { showDirectoryPicker: () => picker.call(window) } : {}),
+      })
+    },
+    [getBatchModule],
+  )
+
+  const writeGeneratedEntries = useCallback(
+    async (
+      entries: StoredZipEntry[],
+      destination: BatchOutputDestination,
+      zipName: string,
+      signal?: AbortSignal,
+    ): Promise<void> => {
+      if (entries.length === 0) return
+      if (destination.kind === 'directory') {
+        const { writeEntriesToDirectory } = await getBatchModule()
+        await writeEntriesToDirectory(destination.handle, entries, { signal })
+        return
+      }
+      const client = await getImagePipeline()
+      const archive = await client.createZip({
+        jobId: `zip-${crypto.randomUUID()}`,
+        entries,
+        signal,
+      })
+      await downloadArrayBuffer(archive, zipName, 'application/zip')
+    },
+    [getBatchModule, getImagePipeline],
+  )
+
+  const startBatch = useCallback(
+    async (request: BatchTransformRequest): Promise<void> => {
+      const destination = await chooseOutputDestination(request.outputMode)
+      const [{ BatchController }, client] = await Promise.all([
+        getBatchModule(),
+        getImagePipeline(),
+      ])
+      const controller = new BatchController(client)
+      const outputController = new AbortController()
+      batchControllerRef.current = controller
+      batchOutputAbortRef.current = outputController
+      setBatchRunning(true)
+      setBatchFailures([])
+      setBatchProgress({
+        completed: 0,
+        failed: 0,
+        total: request.items.length,
+        active: 0,
+      })
+      try {
+        const result = await controller.run(request.items, {
+          commands: [...request.commands],
+          output: request.output,
+          concurrency: 2,
+          signal: outputController.signal,
+          onProgress: setBatchProgress,
+        })
+        setBatchFailures(result.failed)
+        await writeGeneratedEntries(
+          result.completed.map(({ outputName, data }) => ({
+            name: outputName,
+            data,
+          })),
+          destination,
+          `${sanitizeFileStem(projectNameRef.current)}-batch.zip`,
+          outputController.signal,
+        )
+      } finally {
+        if (batchControllerRef.current === controller) {
+          batchControllerRef.current = null
+        }
+        if (batchOutputAbortRef.current === outputController) {
+          batchOutputAbortRef.current = null
+        }
+        setBatchRunning(false)
+      }
+    },
+    [
+      chooseOutputDestination,
+      getBatchModule,
+      getImagePipeline,
+      writeGeneratedEntries,
+    ],
+  )
+
+  const cancelBatch = useCallback((): void => {
+    const cancelledProcessing = batchControllerRef.current?.cancel() ?? false
+    if (!cancelledProcessing) {
+      batchOutputAbortRef.current?.abort()
+    }
+  }, [])
+
+  const changeUserIconPresets = useCallback(
+    async (presets: readonly IconExportPreset[]): Promise<void> => {
+      await ensureIconPresetRepository()
+      iconPresetRepositoryRef.current?.saveUser(presets)
+      setUserIconPresets([...presets])
+    },
+    [ensureIconPresetRepository],
+  )
+
+  const exportIcons = useCallback(
+    async ({ presets, outputMode }: IconExportRequest): Promise<void> => {
+      const engine = engineRef.current
+      if (!engine) {
+        throw new Error('アイコンを書き出す準備ができていません。')
+      }
+      const destination = await chooseOutputDestination(outputMode)
+      const controller = new AbortController()
+      batchOutputAbortRef.current = controller
+      try {
+        const entries: StoredZipEntry[] = []
+        for (const preset of presets) {
+          if (controller.signal.aborted) {
+            throw new DOMException('Aborted', 'AbortError')
+          }
+          entries.push({
+            name: preset.fileName,
+            data: dataUrlToArrayBuffer(
+              await engine.exportSizedPng(
+                preset.width,
+                preset.height,
+                preset.fit,
+                preset.background,
+              ),
+            ),
+          })
+          await new Promise<void>((resolve) =>
+            globalThis.setTimeout(resolve, 0),
+          )
+        }
+        await writeGeneratedEntries(
+          entries,
+          destination,
+          `${sanitizeFileStem(projectNameRef.current)}-icons.zip`,
+          controller.signal,
+        )
+      } finally {
+        if (batchOutputAbortRef.current === controller) {
+          batchOutputAbortRef.current = null
+        }
+      }
+    },
+    [chooseOutputDestination, writeGeneratedEntries],
+  )
+
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedIds[0]) ?? null,
     [layers, selectedIds],
+  )
+  const selectedAdvancedAdjustment = useMemo(() => {
+    if (selectedLayer?.type !== 'adjustment') {
+      return undefined
+    }
+    const operations = engineRef.current?.getAdvancedAdjustmentLayerOperations(
+      selectedLayer.id,
+    )
+    return operations ? { id: selectedLayer.id, operations } : undefined
+  }, [selectedLayer])
+  const selectedTextStyle = useMemo(
+    () =>
+      selectedLayer &&
+      ['i-text', 'text', 'textbox'].includes(selectedLayer.type)
+        ? (engineRef.current?.getSelectedTextStyle() ?? null)
+        : null,
+    [selectedLayer],
   )
 
   const refreshHistoryState = useCallback(() => {
@@ -676,13 +1166,21 @@ export default function App() {
     setLayers(engine.getLayers())
     setSelectedIds(engine.getSelectedLayerIds())
     setSelectionTransform(engine.getSelectionTransform())
+    setSelectionMask(engine.getPixelSelectionMask())
     setFilters(engine.getSelectedImageFilters() ?? DEFAULT_FILTERS)
     setDocumentSize(engine.getDocumentSize())
     setZoom(engine.getZoom())
   }, [])
 
+  const getAutosaveRepository = useCallback((): Promise<AutosaveRepository> => {
+    autosaveRef.current ??= import('./editor/autosave').then(
+      ({ createAutosaveRepository }) => createAutosaveRepository(),
+    )
+    return autosaveRef.current
+  }, [])
+
   const makeProject = useCallback(
-    (snapshot?: EditorSnapshot): ProjectDocument => {
+    async (snapshot?: EditorSnapshot): Promise<ProjectDocument> => {
       const engine = engineRef.current
       if (!engine && !snapshot) {
         throw new Error('エディターがまだ準備できていません。')
@@ -696,9 +1194,11 @@ export default function App() {
       if (sourceNameRef.current) {
         metadata.sourceFileName = sourceNameRef.current
       }
+      const { createProjectDocument } = await import('./editor/project')
       return createProjectDocument({
         fabricCanvas: asJsonObject(current.json),
         canvasSize: { width: current.width, height: current.height },
+        editorState: current.editorState,
         metadata,
       })
     },
@@ -728,8 +1228,9 @@ export default function App() {
           if (newest.generation === generation && newest.revision > revision) {
             return
           }
-          const project = makeProject(snapshot)
-          await autosaveRef.current.save(project)
+          const project = await makeProject(snapshot)
+          const autosave = await getAutosaveRepository()
+          await autosave.save(project)
           const latestAfterSave = latestAutosaveRequestRef.current
           if (
             generation === autosaveGenerationRef.current &&
@@ -755,7 +1256,7 @@ export default function App() {
       autosaveQueueRef.current = reported.catch(() => undefined)
       return reported
     },
-    [makeProject],
+    [getAutosaveRepository, makeProject],
   )
 
   const scheduleAutosave = useCallback(
@@ -841,7 +1342,8 @@ export default function App() {
         .catch(() => undefined)
         .then(async () => {
           if (generation !== autosaveGenerationRef.current) return
-          await autosaveRef.current.clear()
+          const autosave = await getAutosaveRepository()
+          await autosave.clear()
           if (generation === autosaveGenerationRef.current) {
             setAutosaveState('idle')
           }
@@ -849,7 +1351,7 @@ export default function App() {
       autosaveQueueRef.current = operation.catch(() => undefined)
       return operation
     },
-    [],
+    [getAutosaveRepository],
   )
 
   const commitSnapshot = useCallback(
@@ -885,6 +1387,7 @@ export default function App() {
       revisionRef.current += 1
       const snapshot = engine.snapshot()
       latestSnapshotRef.current = snapshot
+      setSelectionMask(engine.getPixelSelectionMask())
 
       if (!DEBOUNCED_CHANGE_REASONS.has(reason)) {
         if (historyTimerRef.current !== null) {
@@ -990,8 +1493,8 @@ export default function App() {
     }
     requestAnimationFrame(fitCanvas)
 
-    void autosaveRef.current
-      .load()
+    void getAutosaveRepository()
+      .then((autosave) => autosave.load())
       .then((project) => {
         if (project) {
           recoveryRef.current = project
@@ -1021,6 +1524,17 @@ export default function App() {
       if (resizeFrameRef.current !== null) {
         cancelAnimationFrame(resizeFrameRef.current)
       }
+      automationDisposersRef.current.splice(0).forEach((dispose) => dispose())
+      macroRecorderRef.current?.cancel()
+      batchControllerRef.current?.cancel()
+      batchOutputAbortRef.current?.abort()
+      selectionFilterAbortRef.current?.abort()
+      selectionFilterClientRef.current?.dispose()
+      selectionFilterClientRef.current = null
+      imagePipelineClientRef.current?.dispose()
+      imagePipelineClientRef.current = null
+      batchControllerRef.current = null
+      automationDispatcherRef.current = null
       engineRef.current = null
       void engine.dispose().catch((error: unknown) => {
         console.error('Pixelweave editor disposal failed', error)
@@ -1033,12 +1547,12 @@ export default function App() {
   useEffect(() => {
     if (pwaState.offlineReady) {
       setStatus((current) =>
-        current.kind === 'error' || current.kind === 'warning'
-          ? current
-          : {
+        current.message === '準備ができました'
+          ? {
               kind: 'success',
               message: 'オフラインで使う準備ができました。',
-            },
+            }
+          : current,
       )
     }
   }, [pwaState.offlineReady])
@@ -1050,6 +1564,33 @@ export default function App() {
       opacity: brushOpacity,
     })
   }, [brushColor, brushOpacity, brushSize])
+
+  useEffect(() => {
+    if (!selectionMask) {
+      setFilterSelectionOnly(false)
+    }
+  }, [selectionMask])
+
+  useEffect(() => {
+    if (activeDialog !== 'studio' || studioTab !== 'automation') return
+    void Promise.all([
+      ensureAutomationRuntime(),
+      ensureIconPresetRepository(),
+    ]).catch((error: unknown) => {
+      setStatus({
+        kind: 'error',
+        message: userFacingErrorMessage(
+          error,
+          '自動化ツールを読み込めませんでした。',
+        ),
+      })
+    })
+  }, [
+    activeDialog,
+    ensureAutomationRuntime,
+    ensureIconPresetRepository,
+    studioTab,
+  ])
 
   const activateTool = useCallback(
     (nextTool: EditorTool) => {
@@ -1162,6 +1703,8 @@ export default function App() {
       beginBusy()
       try {
         await waitForEditorOperations()
+        const { readFileAsDataUrl, validateImageHeader } =
+          await import('./lib/files')
         await validateImageHeader(file)
         activateTool('select')
         const dataUrl = await readFileAsDataUrl(file)
@@ -1198,10 +1741,67 @@ export default function App() {
     ],
   )
 
+  const importSvg = useCallback(
+    async (file: File) => {
+      const engine = engineRef.current
+      if (!engine) return
+      beginBusy()
+      try {
+        await waitForEditorOperations()
+        const { sanitizeSvg } = await import('./lib/svgSafety')
+        const sanitized = sanitizeSvg(await file.text())
+        activateTool('select')
+        await engine.importSvg(sanitized.source, sanitizeFileStem(file.name))
+        sourceNameRef.current = file.name
+        if (projectNameRef.current === '無題のデザイン') {
+          const nextName = sanitizeFileStem(file.name)
+          setProjectName(nextName)
+          projectNameRef.current = nextName
+        }
+        refreshEditorState()
+        setStatus({
+          kind:
+            sanitized.removedElements + sanitized.removedAttributes > 0
+              ? 'warning'
+              : 'success',
+          message:
+            sanitized.removedElements + sanitized.removedAttributes > 0
+              ? '安全でないSVG要素・属性を除去して読み込みました。'
+              : 'SVGをベクターレイヤーとして読み込みました。',
+        })
+      } catch (error) {
+        setStatus({
+          kind: 'error',
+          message: userFacingErrorMessage(
+            error,
+            'SVGを安全に読み込めませんでした。',
+          ),
+        })
+      } finally {
+        endBusy()
+      }
+    },
+    [
+      activateTool,
+      beginBusy,
+      endBusy,
+      refreshEditorState,
+      waitForEditorOperations,
+    ],
+  )
+
   const onImageInput = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (file) await importImage(file)
+    if (!file) return
+    if (
+      file.type === 'image/svg+xml' ||
+      file.name.toLowerCase().endsWith('.svg')
+    ) {
+      await importSvg(file)
+    } else {
+      await importImage(file)
+    }
   }
 
   const openProject = useCallback(
@@ -1224,6 +1824,7 @@ export default function App() {
       beginBusy()
       try {
         await waitForEditorOperations()
+        const { parseProject } = await import('./editor/project')
         const project = parseProject(await file.text())
         await restoreSnapshot(projectToSnapshot(project))
         cancelPendingHistory()
@@ -1290,7 +1891,8 @@ export default function App() {
       const snapshot = engineRef.current?.snapshot()
       if (snapshot) latestSnapshotRef.current = snapshot
       const savedRevision = revisionRef.current
-      const project = makeProject(snapshot)
+      const project = await makeProject(snapshot)
+      const { serializeProject } = await import('./editor/project')
       const source = serializeProject(project)
       if (new Blob([source]).size > MAX_PROJECT_BYTES) {
         throw new FileValidationError(
@@ -1316,6 +1918,7 @@ export default function App() {
         await writable.close()
         saveHandleRef.current = handle
       } else {
+        const { downloadText } = await import('./lib/files')
         downloadText(source, fileName)
       }
       const latestSnapshot = engineRef.current?.snapshot()
@@ -1535,9 +2138,138 @@ export default function App() {
     }
   }, [cancelPendingAutosave, clearAutosaveForGeneration, enqueueAutosave])
 
-  const applyFilters = useCallback((next: Required<ImageFilterSettings>) => {
-    setFilters(next)
-    engineRef.current?.applyImageFilters(next)
+  const applyFilters = useCallback(
+    (next: Required<ImageFilterSettings>) => {
+      const current = filters
+      setFilters(next)
+      if (filterSelectionOnly && selectionMask) {
+        return
+      }
+      const basicFilter = (
+        [
+          'brightness',
+          'contrast',
+          'saturation',
+          'hue',
+          'blur',
+          'grayscale',
+        ] as const
+      ).find((filter) => current[filter] !== next[filter])
+      if (!basicFilter || !automationDispatcherRef.current) {
+        engineRef.current?.applyImageFilters(next)
+        return
+      }
+      void dispatchAutomationCommand({
+        type: 'applyFilter',
+        filter: basicFilter,
+        value: next[basicFilter],
+        target: { kind: 'activeImage' },
+      }).catch((error: unknown) => {
+        setStatus({
+          kind: 'error',
+          message: userFacingErrorMessage(
+            error,
+            'フィルターを適用できませんでした。',
+          ),
+        })
+      })
+    },
+    [dispatchAutomationCommand, filterSelectionOnly, filters, selectionMask],
+  )
+
+  const applyFiltersToSelection = useCallback((): void => {
+    const mask = selectionMask
+    if (!mask) {
+      setStatus({
+        kind: 'warning',
+        message: '先に選択範囲を作成してください。',
+      })
+      return
+    }
+    runEditorOperation(async (engine) => {
+      const controller = new AbortController()
+      selectionFilterAbortRef.current = controller
+      setSelectionFilterRunning(true)
+      setSelectionFilterProgress({ progress: 0, stage: 'prepare' })
+      try {
+        const source = await engine.getDocumentImageData()
+        if (source.width !== mask.width || source.height !== mask.height) {
+          throw new RangeError(
+            '選択範囲の寸法が現在のドキュメントと一致しません。',
+          )
+        }
+        if (!selectionFilterClientRef.current) {
+          const { SelectionFilterClient: SelectionFilterWorkerClient } =
+            await import('./editor/filters/selectionFilterClient')
+          selectionFilterClientRef.current = new SelectionFilterWorkerClient()
+        }
+        const result = await selectionFilterClientRef.current.run(
+          {
+            image: {
+              width: source.width,
+              height: source.height,
+              data: source.data,
+            },
+            mask,
+            settings: filters,
+            outputMode: 'selection-overlay',
+          },
+          {
+            signal: controller.signal,
+            onProgress: setSelectionFilterProgress,
+            transferOwnership: true,
+          },
+        )
+        await engine.addImageDataLayer(
+          {
+            ...result,
+            data: result.data as Uint8ClampedArray<ArrayBuffer>,
+          },
+          'Selection filter',
+          'filter',
+        )
+        setStatus({
+          kind: 'success',
+          message: '選択範囲へフィルターを適用しました。',
+        })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setStatus({
+            kind: 'info',
+            message: '選択範囲フィルターをキャンセルしました。',
+          })
+          return
+        }
+        throw error
+      } finally {
+        if (selectionFilterAbortRef.current === controller) {
+          selectionFilterAbortRef.current = null
+        }
+        setSelectionFilterRunning(false)
+        setSelectionFilterProgress(undefined)
+      }
+    })
+  }, [filters, runEditorOperation, selectionMask])
+
+  const deleteActiveSelection = useCallback((): void => {
+    const engine = engineRef.current
+    if (!engine) return
+    if (engine.getPixelSelectionMask()) {
+      const layerId = engine.deleteSelectedPixels()
+      setStatus(
+        layerId
+          ? {
+              kind: 'success',
+              message: '選択範囲のピクセルを削除しました。',
+            }
+          : {
+              kind: 'warning',
+              message: '削除できる選択ピクセルがありません。',
+            },
+      )
+      return
+    }
+    engine.deleteSelection()
   }, [])
 
   const addShape = (kind: 'rect' | 'ellipse') => {
@@ -1550,7 +2282,19 @@ export default function App() {
 
   const addText = () => {
     activateTool('select')
-    engineRef.current?.addText('テキスト', { fill: shapeColor })
+    void dispatchAutomationCommand({
+      type: 'addText',
+      text: 'テキスト',
+      fill: shapeColor,
+    }).catch((error: unknown) => {
+      setStatus({
+        kind: 'error',
+        message: userFacingErrorMessage(
+          error,
+          'テキストを追加できませんでした。',
+        ),
+      })
+    })
   }
 
   const exportImage = async (event: FormEvent) => {
@@ -1560,6 +2304,22 @@ export default function App() {
     beginBusy()
     try {
       await waitForEditorOperations()
+      if (exportSettings.format === 'svg') {
+        const source = await engine.exportSvg(exportSettings.svgScope)
+        const { downloadText } = await import('./lib/files')
+        downloadText(
+          source,
+          `${sanitizeFileStem(projectNameRef.current)}.svg`,
+          'image/svg+xml',
+        )
+        setActiveDialog(null)
+        setStatus({
+          kind: 'success',
+          message:
+            'SVGを書き出しました。ラスターレイヤーは埋め込み画像として含まれます。',
+        })
+        return
+      }
       const outputWidth = Math.round(
         documentSize.width * exportSettings.multiplier,
       )
@@ -1575,11 +2335,12 @@ export default function App() {
           '出力寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
         )
       }
-      const url = engine.exportDataUrl(
+      const url = await engine.exportDataUrl(
         exportSettings.format,
         exportSettings.quality,
         exportSettings.multiplier,
       )
+      const { downloadUrl } = await import('./lib/files')
       downloadUrl(
         url,
         `${sanitizeFileStem(projectNameRef.current)}.${exportSettings.format === 'jpeg' ? 'jpg' : exportSettings.format}`,
@@ -1609,14 +2370,19 @@ export default function App() {
     setDragActive(false)
     const file = event.dataTransfer.files[0]
     if (!file) return
-    if (file.type.startsWith('image/')) await importImage(file)
+    if (
+      file.type === 'image/svg+xml' ||
+      file.name.toLowerCase().endsWith('.svg')
+    ) {
+      await importSvg(file)
+    } else if (file.type.startsWith('image/')) await importImage(file)
     else if (file.type === 'application/json' || file.name.endsWith('.json')) {
       await openProject(file)
     } else {
       setStatus({
         kind: 'error',
         message:
-          'PNG、JPEG、WebPまたはPixelweaveプロジェクトを選択してください。',
+          'PNG、JPEG、WebP、SVGまたはPixelweaveプロジェクトを選択してください。',
       })
     }
   }
@@ -1631,16 +2397,25 @@ export default function App() {
       const image = [...(event.clipboardData?.files ?? [])].find((file) =>
         file.type.startsWith('image/'),
       )
+      const svgText =
+        event.clipboardData?.getData('image/svg+xml') ||
+        event.clipboardData?.getData('text/plain')
       event.preventDefault()
       if (image) {
-        void importImage(image)
+        void (image.type === 'image/svg+xml'
+          ? importSvg(image)
+          : importImage(image))
+      } else if (svgText?.trimStart().startsWith('<svg')) {
+        void importSvg(
+          new File([svgText], 'clipboard.svg', { type: 'image/svg+xml' }),
+        )
       } else {
         runEditorOperation((engine) => engine.pasteSelection())
       }
     }
     window.addEventListener('paste', onPasteImage)
     return () => window.removeEventListener('paste', onPasteImage)
-  }, [importImage, runEditorOperation])
+  }, [importImage, importSvg, runEditorOperation])
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -1676,7 +2451,7 @@ export default function App() {
         return
       } else if (key === 'delete' || key === 'backspace') {
         event.preventDefault()
-        engineRef.current?.deleteSelection()
+        deleteActiveSelection()
       } else if (!event.shiftKey && key === 'v') {
         activateTool('select')
       } else if (!event.shiftKey && key === 'b') {
@@ -1700,7 +2475,15 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activateTool, activeDialog, redo, runEditorOperation, saveProject, undo])
+  }, [
+    activateTool,
+    activeDialog,
+    deleteActiveSelection,
+    redo,
+    runEditorOperation,
+    saveProject,
+    undo,
+  ])
 
   const updateTransform = (
     field: keyof Omit<SelectionTransform, 'id'>,
@@ -1733,6 +2516,7 @@ export default function App() {
         )
       }
       updateInProgressRef.current = true
+      const { applyServiceWorkerUpdate } = await import('./pwa')
       if (!applyServiceWorkerUpdate()) {
         updateInProgressRef.current = false
         endBusy()
@@ -1821,7 +2605,7 @@ export default function App() {
             aria-haspopup="dialog"
             onClick={() => setActiveDialog('menu')}
           >
-            <Menu aria-hidden="true" />
+            <Glyph>≡</Glyph>
           </button>
           <button
             className="topbar-button"
@@ -1836,7 +2620,7 @@ export default function App() {
             type="button"
             onClick={() => projectInputRef.current?.click()}
           >
-            <Upload aria-hidden="true" />
+            <Glyph>↑</Glyph>
             開く
           </button>
           <button
@@ -1846,6 +2630,14 @@ export default function App() {
           >
             <Save aria-hidden="true" />
             保存
+          </button>
+          <button
+            className="topbar-button"
+            type="button"
+            onClick={() => setActiveDialog('studio')}
+          >
+            <Sparkles aria-hidden="true" />
+            Studio
           </button>
           <button
             className="topbar-button accent"
@@ -1880,12 +2672,8 @@ export default function App() {
             className={`save-state ${autosaveState}`}
             title="編集内容は端末内にのみ自動保存されます"
           >
-            {autosaveState === 'failed' ? (
-              <CloudOff aria-hidden="true" />
-            ) : (
-              <Cloud aria-hidden="true" />
-            )}
-            {autosaveLabel}
+            {autosaveState === 'failed' ? <Glyph>☁×</Glyph> : <Glyph>☁</Glyph>}
+            <span>{autosaveLabel}</span>
           </span>
           <button
             className="icon-button"
@@ -1893,7 +2681,7 @@ export default function App() {
             aria-label="ショートカット一覧"
             onClick={() => setActiveDialog('shortcuts')}
           >
-            <HelpCircle aria-hidden="true" />
+            <Glyph>?</Glyph>
           </button>
         </div>
       </header>
@@ -1928,7 +2716,7 @@ export default function App() {
               title="画像を追加"
               onClick={() => imageInputRef.current?.click()}
             >
-              <ImagePlus aria-hidden="true" />
+              <Glyph>＋</Glyph>
             </button>
             <button
               className="tool-button"
@@ -1937,7 +2725,7 @@ export default function App() {
               title="矩形"
               onClick={() => addShape('rect')}
             >
-              <Square aria-hidden="true" />
+              <Glyph>■</Glyph>
             </button>
             <button
               className="tool-button"
@@ -1946,7 +2734,7 @@ export default function App() {
               title="楕円"
               onClick={() => addShape('ellipse')}
             >
-              <Circle aria-hidden="true" />
+              <Glyph>●</Glyph>
             </button>
             <button
               className="tool-button"
@@ -1969,7 +2757,7 @@ export default function App() {
                 }
               }}
             >
-              <Crop aria-hidden="true" />
+              <Glyph>⌗</Glyph>
             </button>
           </div>
           <div className="rail-spacer" />
@@ -2082,7 +2870,7 @@ export default function App() {
                     updateTransform('flipX', !selectionTransform.flipX)
                   }
                 >
-                  <FlipHorizontal2 aria-hidden="true" />
+                  <Glyph>↔</Glyph>
                 </button>
                 <button
                   className={`icon-button ${selectionTransform.flipY ? 'active' : ''}`}
@@ -2093,7 +2881,59 @@ export default function App() {
                     updateTransform('flipY', !selectionTransform.flipY)
                   }
                 >
-                  <FlipVertical2 aria-hidden="true" />
+                  <Glyph>↕</Glyph>
+                </button>
+              </div>
+            ) : null}
+
+            {tool === 'select' && selectedIds.length > 0 ? (
+              <div
+                className="alignment-options"
+                role="toolbar"
+                aria-label="整列と分布"
+              >
+                {(
+                  [
+                    ['left', '左揃え'],
+                    ['center-x', '左右中央'],
+                    ['right', '右揃え'],
+                    ['top', '上揃え'],
+                    ['center-y', '上下中央'],
+                    ['bottom', '下揃え'],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    onClick={() =>
+                      engineRef.current?.alignSelection(
+                        mode,
+                        selectedIds.length === 1 ? 'canvas' : 'selection',
+                      )
+                    }
+                  >
+                    {label.slice(0, 1)}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  disabled={selectedIds.length < 3}
+                  onClick={() =>
+                    engineRef.current?.alignSelection('distribute-x')
+                  }
+                >
+                  横分布
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedIds.length < 3}
+                  onClick={() =>
+                    engineRef.current?.alignSelection('distribute-y')
+                  }
+                >
+                  縦分布
                 </button>
               </div>
             ) : null}
@@ -2159,6 +2999,54 @@ export default function App() {
             <div className="canvas-rulers">
               <span>{documentSize.width} px</span>
               <span>{documentSize.height} px</span>
+              <button
+                type="button"
+                draggable
+                title="キャンバスへドラッグして配置"
+                onClick={() =>
+                  engineRef.current?.addGuide('x', documentSize.width / 2)
+                }
+                onDragEnd={(event) =>
+                  engineRef.current?.addGuideFromPointer('x', event.nativeEvent)
+                }
+              >
+                縦ガイド
+              </button>
+              <button
+                type="button"
+                draggable
+                title="キャンバスへドラッグして配置"
+                onClick={() =>
+                  engineRef.current?.addGuide('y', documentSize.height / 2)
+                }
+                onDragEnd={(event) =>
+                  engineRef.current?.addGuideFromPointer('y', event.nativeEvent)
+                }
+              >
+                横ガイド
+              </button>
+              <button
+                type="button"
+                onClick={() => engineRef.current?.clearGuides()}
+              >
+                ガイド消去
+              </button>
+              <label>
+                スナップ
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  defaultValue="8"
+                  aria-label="スナップ許容距離"
+                  onChange={(event) =>
+                    engineRef.current?.setSnapTolerance(
+                      Number(event.target.value),
+                    )
+                  }
+                />
+                px
+              </label>
             </div>
             <div className="canvas-viewport" ref={canvasViewportRef}>
               <canvas
@@ -2181,13 +3069,14 @@ export default function App() {
                     type="button"
                     onClick={() => imageInputRef.current?.click()}
                   >
-                    <ImagePlus aria-hidden="true" />
+                    <Glyph>＋</Glyph>
                     画像を選択
                   </button>
                   <div className="format-chips" aria-label="対応形式">
                     <span>PNG</span>
                     <span>JPEG</span>
                     <span>WEBP</span>
+                    <span>SVG</span>
                     <span>最大 64 MP</span>
                   </div>
                 </div>
@@ -2250,11 +3139,7 @@ export default function App() {
               onClick={() => setInspectorOpen((value) => !value)}
               aria-label={inspectorOpen ? 'インスペクターを閉じる' : '開く'}
             >
-              {inspectorOpen ? (
-                <PanelRightClose aria-hidden="true" />
-              ) : (
-                <PanelRightOpen aria-hidden="true" />
-              )}
+              {inspectorOpen ? <Glyph>▶</Glyph> : <Glyph>◀</Glyph>}
             </button>
           </div>
 
@@ -2272,7 +3157,7 @@ export default function App() {
                 <div className="layer-properties">
                   <label>
                     <span>
-                      <Blend aria-hidden="true" />
+                      <Glyph>◐</Glyph>
                       ブレンド
                     </span>
                     <select
@@ -2312,6 +3197,191 @@ export default function App() {
                       }
                     />
                   </label>
+                  {selectedTextStyle ? (
+                    <fieldset className="text-decoration-controls">
+                      <legend>テキスト装飾</legend>
+                      <label>
+                        <span>縁取り色</span>
+                        <input
+                          type="color"
+                          value={
+                            selectedTextStyle.stroke === 'transparent'
+                              ? '#ffffff'
+                              : selectedTextStyle.stroke
+                          }
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              stroke: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>縁取り幅</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="64"
+                          value={selectedTextStyle.strokeWidth}
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              strokeWidth: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>字間</span>
+                        <input
+                          type="number"
+                          min="-500"
+                          max="2000"
+                          value={selectedTextStyle.charSpacing}
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              charSpacing: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>行間</span>
+                        <input
+                          type="number"
+                          min="0.5"
+                          max="5"
+                          step="0.05"
+                          value={selectedTextStyle.lineHeight}
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              lineHeight: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="toggle-row compact">
+                        <span>グラデーション</span>
+                        <input
+                          type="checkbox"
+                          checked={selectedTextStyle.gradient !== null}
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              gradient: event.target.checked
+                                ? {
+                                    start: '#7c3aed',
+                                    end: '#22d3ee',
+                                    angle: 0,
+                                  }
+                                : null,
+                              fill: selectedTextStyle.fill,
+                            })
+                          }
+                        />
+                      </label>
+                      {selectedTextStyle.gradient ? (
+                        <div className="color-pair">
+                          <input
+                            type="color"
+                            aria-label="グラデーション開始色"
+                            value={selectedTextStyle.gradient.start}
+                            onChange={(event) =>
+                              engineRef.current?.setSelectedTextStyle({
+                                gradient: {
+                                  ...selectedTextStyle.gradient!,
+                                  start: event.target.value,
+                                },
+                              })
+                            }
+                          />
+                          <input
+                            type="color"
+                            aria-label="グラデーション終了色"
+                            value={selectedTextStyle.gradient.end}
+                            onChange={(event) =>
+                              engineRef.current?.setSelectedTextStyle({
+                                gradient: {
+                                  ...selectedTextStyle.gradient!,
+                                  end: event.target.value,
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ) : null}
+                      <label className="toggle-row compact">
+                        <span>シャドウ</span>
+                        <input
+                          type="checkbox"
+                          checked={selectedTextStyle.shadow !== null}
+                          onChange={(event) =>
+                            engineRef.current?.setSelectedTextStyle({
+                              shadow: event.target.checked
+                                ? {
+                                    color: 'rgba(0,0,0,0.45)',
+                                    blur: 12,
+                                    offsetX: 4,
+                                    offsetY: 6,
+                                  }
+                                : null,
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="arc-control">
+                        <label>
+                          <span>円弧半径</span>
+                          <input
+                            key={selectedLayer.id}
+                            type="number"
+                            min="24"
+                            max="4096"
+                            defaultValue="120"
+                            id={`arc-radius-${selectedLayer.id}`}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const input = document.getElementById(
+                              `arc-radius-${selectedLayer.id}`,
+                            ) as HTMLInputElement | null
+                            engineRef.current?.setSelectedTextArc(
+                              Number(input?.value ?? 120),
+                            )
+                          }}
+                        >
+                          円弧へ配置
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            engineRef.current?.setSelectedTextArc(null)
+                          }
+                        >
+                          解除
+                        </button>
+                      </div>
+                    </fieldset>
+                  ) : null}
+                  {selectedLayer.type === 'adjustment' ? (
+                    <button
+                      className="secondary-button full-width"
+                      type="button"
+                      onClick={() =>
+                        runEditorOperation(async (engine) =>
+                          engine.getAdvancedAdjustmentLayerOperations(
+                            selectedLayer.id,
+                          )
+                            ? engine.rasterizeAdvancedAdjustmentLayer(
+                                selectedLayer.id,
+                              )
+                            : engine.rasterizeAdjustmentLayer(selectedLayer.id),
+                        )
+                      }
+                    >
+                      調整レイヤーをラスタライズ
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <p className="muted-callout">
@@ -2406,11 +3476,7 @@ export default function App() {
                         )
                       }}
                     >
-                      {layer.locked ? (
-                        <Lock aria-hidden="true" />
-                      ) : (
-                        <Unlock aria-hidden="true" />
-                      )}
+                      {layer.locked ? <Glyph>⌑</Glyph> : <Glyph>⌐</Glyph>}
                     </button>
                   </div>
                 ))}
@@ -2480,10 +3546,14 @@ export default function App() {
                 <button
                   className="danger"
                   type="button"
-                  disabled={!selectedLayer}
-                  onClick={() => engineRef.current?.deleteSelection()}
-                  aria-label="削除"
-                  title="削除"
+                  disabled={!selectedLayer && !selectionMask}
+                  onClick={deleteActiveSelection}
+                  aria-label={
+                    selectionMask ? '選択ピクセルを削除' : 'レイヤーを削除'
+                  }
+                  title={
+                    selectionMask ? '選択ピクセルを削除' : 'レイヤーを削除'
+                  }
                 >
                   <Trash2 aria-hidden="true" />
                 </button>
@@ -2503,6 +3573,31 @@ export default function App() {
               <p className="panel-intro">
                 画像レイヤーを1つ選択して、見た目を調整します。値はプロジェクトへ保存されます。
               </p>
+              {selectionMask ? (
+                <label className="toggle-row selection-filter-toggle">
+                  <span>
+                    <span className="toggle-icon">
+                      <MousePointer2 aria-hidden="true" />
+                    </span>
+                    <span>
+                      <strong>選択範囲だけに適用</strong>
+                      <small>Studio で作成した8bitマスクとフェザーを反映</small>
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={filterSelectionOnly}
+                    onChange={(event) =>
+                      setFilterSelectionOnly(event.target.checked)
+                    }
+                  />
+                </label>
+              ) : (
+                <p className="selection-filter-hint">
+                  部分適用するには、Studio
+                  の「選択・背景・スクリプト」で選択範囲を作成します。
+                </p>
+              )}
               <div className="adjustments">
                 <AdjustmentSlider
                   label="明るさ"
@@ -2541,7 +3636,7 @@ export default function App() {
                 <label className="toggle-row">
                   <span>
                     <span className="toggle-icon">
-                      <AppWindow aria-hidden="true" />
+                      <Glyph>▣</Glyph>
                     </span>
                     <span>
                       <strong>グレースケール</strong>
@@ -2559,12 +3654,184 @@ export default function App() {
                     }
                   />
                 </label>
+                <AdjustmentSlider
+                  label="シャープ"
+                  value={filters.sharpen}
+                  min={0}
+                  max={2}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, sharpen: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="エンボス"
+                  value={filters.emboss}
+                  min={0}
+                  max={2}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, emboss: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="ノイズ"
+                  value={filters.noise}
+                  min={0}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, noise: value })
+                  }
+                />
+                <label className="adjustment-control">
+                  <span>
+                    ピクセレート
+                    <output>{filters.pixelate}px</output>
+                  </span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="64"
+                    step="1"
+                    value={filters.pixelate}
+                    onChange={(event) =>
+                      applyFilters({
+                        ...filters,
+                        pixelate: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <div className="filter-toggle-grid">
+                  <label className="toggle-row compact">
+                    <span>セピア</span>
+                    <input
+                      type="checkbox"
+                      checked={filters.sepia > 0}
+                      onChange={(event) =>
+                        applyFilters({
+                          ...filters,
+                          sepia: event.target.checked ? 1 : 0,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="toggle-row compact">
+                    <span>色反転</span>
+                    <input
+                      type="checkbox"
+                      checked={filters.invert > 0}
+                      onChange={(event) =>
+                        applyFilters({
+                          ...filters,
+                          invert: event.target.checked ? 1 : 0,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <AdjustmentSlider
+                  label="ガンマ"
+                  value={filters.gamma}
+                  min={0.1}
+                  max={2.2}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, gamma: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="色温度"
+                  value={filters.temperature}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, temperature: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="色かぶり補正"
+                  value={filters.tint}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, tint: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="ビネット"
+                  value={filters.vignette}
+                  min={0}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, vignette: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="デュオトーン"
+                  value={filters.duotone}
+                  min={0}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, duotone: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="ハーフトーン"
+                  value={filters.halftone}
+                  min={0}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, halftone: value })
+                  }
+                />
+                <AdjustmentSlider
+                  label="グリッチ"
+                  value={filters.glitch}
+                  min={0}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, glitch: value })
+                  }
+                />
+                <button
+                  className="secondary-button full-width"
+                  type="button"
+                  disabled={filterSelectionOnly}
+                  onClick={() =>
+                    runEditorOperation((engine) =>
+                      engine.addAdjustmentLayer(filters),
+                    )
+                  }
+                >
+                  <Layers3 aria-hidden="true" />
+                  現在の設定で調整レイヤーを追加
+                </button>
+                {filterSelectionOnly && selectionMask ? (
+                  <div className="selection-filter-actions">
+                    <button
+                      className="primary-button full-width"
+                      type="button"
+                      disabled={selectionFilterRunning}
+                      onClick={applyFiltersToSelection}
+                    >
+                      <Sparkles aria-hidden="true" />
+                      選択範囲へフィルターを適用
+                    </button>
+                    {selectionFilterRunning ? (
+                      <>
+                        <progress
+                          max="1"
+                          value={selectionFilterProgress?.progress ?? 0}
+                          aria-label="選択範囲フィルターの進捗"
+                        />
+                        <button
+                          className="secondary-button full-width"
+                          type="button"
+                          onClick={() =>
+                            selectionFilterAbortRef.current?.abort()
+                          }
+                        >
+                          キャンセル
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
                 <button
                   className="secondary-button full-width"
                   type="button"
                   onClick={() => applyFilters(DEFAULT_FILTERS)}
                 >
-                  <RotateCw aria-hidden="true" />
+                  <Glyph>↻</Glyph>
                   調整をリセット
                 </button>
               </div>
@@ -2587,7 +3854,7 @@ export default function App() {
                 {[...historyLabels].reverse().map((entry, index) => (
                   <li key={entry.id} className={index === 0 ? 'current' : ''}>
                     <span className="history-marker">
-                      {index === 0 ? <Check aria-hidden="true" /> : null}
+                      {index === 0 ? <Glyph>✓</Glyph> : null}
                     </span>
                     <span>
                       <strong>{entry.label}</strong>
@@ -2626,7 +3893,7 @@ export default function App() {
         className="visually-hidden-input"
         aria-label="画像ファイルを選択"
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg"
         onChange={(event) => void onImageInput(event)}
       />
       <input
@@ -2641,10 +3908,10 @@ export default function App() {
       {dragActive ? (
         <div className="drop-overlay" role="status">
           <span>
-            <ImagePlus aria-hidden="true" />
+            <Glyph>＋</Glyph>
           </span>
           <strong>ここにドロップして開く</strong>
-          <p>PNG・JPEG・WebP・Pixelweave project</p>
+          <p>PNG・JPEG・WebP・SVG・Pixelweave project</p>
         </div>
       ) : null}
 
@@ -2695,7 +3962,7 @@ export default function App() {
                 projectInputRef.current?.click()
               }}
             >
-              <Upload aria-hidden="true" />
+              <Glyph>↑</Glyph>
               プロジェクトを開く
             </button>
             <button
@@ -2716,6 +3983,14 @@ export default function App() {
             >
               <Download aria-hidden="true" />
               画像を書き出す
+            </button>
+            <button
+              className="secondary-button full-width"
+              type="button"
+              onClick={() => setActiveDialog('studio')}
+            >
+              <Sparkles aria-hidden="true" />
+              拡張ツールを開く
             </button>
           </div>
         </Modal>
@@ -2827,7 +4102,7 @@ export default function App() {
           <form className="modal-form" onSubmit={exportImage}>
             <fieldset className="format-options">
               <legend>ファイル形式</legend>
-              {(['png', 'jpeg', 'webp'] as const).map((format) => (
+              {(['png', 'jpeg', 'webp', 'svg'] as const).map((format) => (
                 <label
                   key={format}
                   className={exportSettings.format === format ? 'selected' : ''}
@@ -2849,7 +4124,9 @@ export default function App() {
                       ? '透明度・高品質'
                       : format === 'jpeg'
                         ? '写真・小容量'
-                        : '高圧縮・透明度'}
+                        : format === 'webp'
+                          ? '高圧縮・透明度'
+                          : '編集可能なベクター'}
                   </small>
                 </label>
               ))}
@@ -2865,7 +4142,10 @@ export default function App() {
                 min="0.1"
                 max="1"
                 step="0.01"
-                disabled={exportSettings.format === 'png'}
+                disabled={
+                  exportSettings.format === 'png' ||
+                  exportSettings.format === 'svg'
+                }
                 value={exportSettings.quality}
                 onChange={(event) =>
                   setExportSettings((value) => ({
@@ -2875,9 +4155,33 @@ export default function App() {
                 }
               />
             </label>
+            {exportSettings.format === 'svg' ? (
+              <>
+                <label>
+                  <span>SVGの範囲</span>
+                  <select
+                    value={exportSettings.svgScope}
+                    onChange={(event) =>
+                      setExportSettings((value) => ({
+                        ...value,
+                        svgScope: event.target.value as
+                          'document' | 'selection',
+                      }))
+                    }
+                  >
+                    <option value="document">キャンバス全体</option>
+                    <option value="selection">選択オブジェクト</option>
+                  </select>
+                </label>
+                <p className="panel-intro">
+                  画像レイヤーはData URLとしてSVG内へ埋め込まれます。
+                </p>
+              </>
+            ) : null}
             <label>
               <span>出力倍率</span>
               <select
+                disabled={exportSettings.format === 'svg'}
                 value={exportSettings.multiplier}
                 onChange={(event) =>
                   setExportSettings((value) => ({
@@ -2902,12 +4206,14 @@ export default function App() {
               </select>
             </label>
             <div className="export-summary">
-              <FileImage aria-hidden="true" />
+              <Glyph>▧</Glyph>
               <span>
                 <strong>
-                  {Math.round(documentSize.width * exportSettings.multiplier)} ×{' '}
-                  {Math.round(documentSize.height * exportSettings.multiplier)}{' '}
-                  px
+                  {exportSettings.format === 'svg'
+                    ? exportSettings.svgScope === 'document'
+                      ? `${documentSize.width} × ${documentSize.height} viewBox`
+                      : '選択範囲のviewBox'
+                    : `${Math.round(documentSize.width * exportSettings.multiplier)} × ${Math.round(documentSize.height * exportSettings.multiplier)} px`}
                 </strong>
                 <small>
                   {sanitizeFileStem(projectName)}.
@@ -2931,6 +4237,325 @@ export default function App() {
               </button>
             </div>
           </form>
+        </Modal>
+      ) : null}
+
+      {activeDialog === 'studio' ? (
+        <Modal
+          title="拡張ツール"
+          description="ロゴ生成、自動化、選択・背景除去・スクリプトを端末内で実行します。"
+          wide
+          onClose={() => setActiveDialog(null)}
+        >
+          <div className="studio-tabs" role="tablist" aria-label="拡張ツール">
+            {(
+              [
+                ['logo', 'ロゴ生成'],
+                ['automation', '自動化・バッチ'],
+                ['advanced', '選択・背景・スクリプト'],
+              ] as const
+            ).map(([tab, label]) => (
+              <button
+                key={tab}
+                id={`studio-tab-${tab}`}
+                type="button"
+                role="tab"
+                aria-selected={studioTab === tab}
+                aria-controls={`studio-panel-${tab}`}
+                onClick={() => setStudioTab(tab)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <section
+            id={`studio-panel-${studioTab}`}
+            role="tabpanel"
+            aria-labelledby={`studio-tab-${studioTab}`}
+            className="studio-panel"
+          >
+            <Suspense
+              fallback={
+                <div className="studio-loading" role="status">
+                  拡張ツールを読み込んでいます…
+                </div>
+              }
+            >
+              {studioTab === 'logo' ? (
+                <LogoGeneratorPanel
+                  initialName={projectName}
+                  getImageData={async () => {
+                    const engine = engineRef.current
+                    if (!engine) {
+                      throw new Error(
+                        'ドキュメント画像を取得する準備ができていません。',
+                      )
+                    }
+                    return engine.getDocumentImageData()
+                  }}
+                  onApplyColor={(color, target) => {
+                    runEditorOperation(async (engine) => {
+                      engine.setSelectionColor(color, target)
+                    })
+                  }}
+                  onInsert={(variation) => {
+                    runEditorOperation((engine) =>
+                      engine.addLogoVariation(variation),
+                    )
+                  }}
+                />
+              ) : studioTab === 'automation' ? (
+                <>
+                  <section
+                    className="automation-quick-actions"
+                    aria-labelledby="automation-quick-title"
+                  >
+                    <div>
+                      <h2 id="automation-quick-title">
+                        記録できるクイック操作
+                      </h2>
+                      <p>
+                        マクロ記録中に実行すると、直列化可能なコマンドとして保存されます。
+                      </p>
+                    </div>
+                    <fieldset>
+                      <legend>キャンバスサイズ</legend>
+                      <label>
+                        幅
+                        <input
+                          type="number"
+                          min="1"
+                          max={MAX_IMAGE_DIMENSION}
+                          value={quickAutomation.width}
+                          onChange={(event) =>
+                            setQuickAutomation((current) => ({
+                              ...current,
+                              width: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        高さ
+                        <input
+                          type="number"
+                          min="1"
+                          max={MAX_IMAGE_DIMENSION}
+                          value={quickAutomation.height}
+                          onChange={(event) =>
+                            setQuickAutomation((current) => ({
+                              ...current,
+                              height: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          runQuickCommand({
+                            type: 'resizeCanvas',
+                            width: quickAutomation.width,
+                            height: quickAutomation.height,
+                          })
+                        }}
+                      >
+                        キャンバスをリサイズ
+                      </button>
+                    </fieldset>
+                    <fieldset>
+                      <legend>画像フィルター</legend>
+                      <label>
+                        種類
+                        <select
+                          value={quickAutomation.filter}
+                          onChange={(event) =>
+                            setQuickAutomation((current) => ({
+                              ...current,
+                              filter: event.target.value as AutomationFilter,
+                            }))
+                          }
+                        >
+                          <option value="brightness">明るさ</option>
+                          <option value="contrast">コントラスト</option>
+                          <option value="saturation">彩度</option>
+                          <option value="hue">色相</option>
+                          <option value="blur">ぼかし</option>
+                        </select>
+                      </label>
+                      <label>
+                        値
+                        <input
+                          type="number"
+                          min={quickAutomation.filter === 'blur' ? 0 : -1}
+                          max="1"
+                          step="0.05"
+                          value={quickAutomation.filterValue}
+                          onChange={(event) =>
+                            setQuickAutomation((current) => ({
+                              ...current,
+                              filterValue: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          runQuickCommand({
+                            type: 'applyFilter',
+                            filter: quickAutomation.filter,
+                            value: quickAutomation.filterValue,
+                            target: { kind: 'activeImage' },
+                          })
+                        }}
+                      >
+                        フィルターを適用
+                      </button>
+                    </fieldset>
+                    <fieldset>
+                      <legend>透かし</legend>
+                      <label>
+                        テキスト
+                        <input
+                          value={quickAutomation.watermark}
+                          onChange={(event) =>
+                            setQuickAutomation((current) => ({
+                              ...current,
+                              watermark: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          runQuickCommand({
+                            type: 'addWatermark',
+                            text: quickAutomation.watermark,
+                            position: 'bottomRight',
+                            color: '#ffffff',
+                            opacity: 0.72,
+                          })
+                        }}
+                      >
+                        透かしを追加
+                      </button>
+                    </fieldset>
+                  </section>
+                  <AutomationBatchPanel
+                    savedMacros={savedMacros}
+                    isRecording={macroRecording}
+                    recordedCommandCount={recordedCommandCount}
+                    batchRunning={batchRunning}
+                    batchProgress={batchProgress}
+                    batchFailures={batchFailures}
+                    userIconPresets={userIconPresets}
+                    documentLabel={projectName}
+                    onStartMacroRecording={startMacroRecording}
+                    onStopMacroRecording={stopMacroRecording}
+                    onReplayMacro={replayMacro}
+                    onImportMacro={importMacro}
+                    onExportMacro={exportMacro}
+                    onStartBatch={startBatch}
+                    onCancelBatch={cancelBatch}
+                    onChangeUserIconPresets={changeUserIconPresets}
+                    onExportIcons={exportIcons}
+                    onStatus={setStatus}
+                  />
+                </>
+              ) : (
+                <AdvancedStudioPanel
+                  documentWidth={documentSize.width}
+                  documentHeight={documentSize.height}
+                  getDocumentImageData={async () => {
+                    const engine = engineRef.current
+                    if (!engine) {
+                      throw new Error(
+                        'ドキュメント画像を取得する準備ができていません。',
+                      )
+                    }
+                    return engine.getDocumentImageData()
+                  }}
+                  selectionMask={selectionMask}
+                  onApplyFilters={(operations) => {
+                    runEditorOperation((engine) =>
+                      engine.applyAdvancedFilterOperations(
+                        operations,
+                        'Advanced filters',
+                      ),
+                    )
+                  }}
+                  advancedAdjustment={selectedAdvancedAdjustment}
+                  onAddAdvancedAdjustment={(operations: FilterOperation[]) => {
+                    runEditorOperation((engine) =>
+                      engine.addAdvancedAdjustmentLayer(
+                        operations,
+                        'Advanced adjustment',
+                      ),
+                    )
+                  }}
+                  onUpdateAdvancedAdjustment={(
+                    id: string,
+                    operations: FilterOperation[],
+                  ) => {
+                    runEditorOperation((engine) =>
+                      engine.setAdvancedAdjustmentLayerOperations(
+                        id,
+                        operations,
+                      ),
+                    )
+                  }}
+                  onSelectionMask={(mask) => {
+                    const engine = engineRef.current
+                    if (!engine?.setPixelSelectionMask(mask)) {
+                      setStatus({
+                        kind: 'error',
+                        message: '選択範囲を更新できませんでした。',
+                      })
+                      return
+                    }
+                    setSelectionMask(mask)
+                  }}
+                  onBackgroundResult={(result, mask) => {
+                    runEditorOperation((engine) =>
+                      engine.runAtomic('background-removal', async () => {
+                        if (!engine.setPixelSelectionMask(mask)) {
+                          throw new Error(
+                            '背景除去マスクを選択範囲へ反映できませんでした。',
+                          )
+                        }
+                        await engine.addImageDataLayer(
+                          result,
+                          'Background removed',
+                          'background-removal',
+                        )
+                      }),
+                    )
+                  }}
+                  onScriptCommands={(commands: EditorScriptCommand[]) => {
+                    runEditorOperation(async (engine) => {
+                      const { executeEditorScript } =
+                        await import('./editor/scriptAdapter')
+                      return executeEditorScript(engine, {
+                        schemaVersion: 1,
+                        commands,
+                      })
+                    })
+                  }}
+                  onMacroRegistered={(entry: MacroRepositoryEntry) => {
+                    setSavedMacros((current) => [
+                      entry,
+                      ...current.filter(
+                        ({ macro }) => macro.id !== entry.macro.id,
+                      ),
+                    ])
+                  }}
+                  onStatus={setStatus}
+                />
+              )}
+            </Suspense>
+          </section>
         </Modal>
       ) : null}
 
@@ -2962,7 +4587,7 @@ export default function App() {
             ))}
           </div>
           <div className="privacy-note">
-            <Lock aria-hidden="true" />
+            <Glyph>⌑</Glyph>
             <span>
               <strong>Local-first</strong>
               画像と編集内容はサーバーへ送信されません。
