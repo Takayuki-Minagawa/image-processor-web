@@ -92,6 +92,20 @@ import type { SelectionFilterClient } from './editor/filters/selectionFilterClie
 import type { SelectionFilterProgress } from './editor/filters/selectionFilter'
 import type { FilterOperation } from './editor/filters/types'
 import type { EditorScriptCommand } from './scripting/types'
+import {
+  JAPANESE_EDITOR_UI_COPY,
+  loadEnglishUiCopy,
+  themeColorFor,
+  type EditorUiCopy,
+} from './i18n'
+import {
+  loadLocale,
+  loadTheme,
+  saveLocale,
+  saveTheme,
+  type AppLocale,
+  type AppTheme,
+} from './uiPreferences'
 
 const LogoGeneratorPanel = lazy(async () => ({
   default: (await import('./components/LogoGeneratorPanel')).LogoGeneratorPanel,
@@ -103,9 +117,12 @@ const AdvancedStudioPanel = lazy(async () => ({
   default: (await import('./components/AdvancedStudioPanel'))
     .AdvancedStudioPanel,
 }))
+const ManualContent = lazy(() => import('./components/ManualContent'))
+const PreferenceControls = lazy(() => import('./components/PreferenceControls'))
 
 type InspectorTab = 'layers' | 'adjustments' | 'history'
-type DialogName = 'menu' | 'new' | 'export' | 'studio' | 'shortcuts' | null
+type DialogName =
+  'menu' | 'new' | 'export' | 'studio' | 'manual' | 'shortcuts' | null
 type StudioTab = 'logo' | 'automation' | 'advanced'
 
 interface HistoryLabel {
@@ -187,14 +204,13 @@ const CHANGE_LABELS: Record<EditorChangeReason, string> = {
 
 const TOOL_ITEMS: Array<{
   id: EditorTool
-  label: string
   shortcut: string
   icon: typeof MousePointer2
 }> = [
-  { id: 'select', label: '選択・変形', shortcut: 'V', icon: MousePointer2 },
-  { id: 'brush', label: 'ブラシ', shortcut: 'B', icon: Brush },
-  { id: 'eraser', label: '消しゴム', shortcut: 'E', icon: Eraser },
-  { id: 'pan', label: '手のひら', shortcut: 'H', icon: Hand },
+  { id: 'select', shortcut: 'V', icon: MousePointer2 },
+  { id: 'brush', shortcut: 'B', icon: Brush },
+  { id: 'eraser', shortcut: 'E', icon: Eraser },
+  { id: 'pan', shortcut: 'H', icon: Hand },
 ]
 
 const BLEND_MODES: Array<{
@@ -391,12 +407,14 @@ function Modal({
   description,
   children,
   onClose,
+  closeLabel = '閉じる',
   wide = false,
 }: {
   title: string
   description?: string
   children: ReactNode
   onClose: () => void
+  closeLabel?: string
   wide?: boolean
 }) {
   const titleId = useId()
@@ -490,7 +508,7 @@ function Modal({
             className="icon-button"
             type="button"
             onClick={onClose}
-            aria-label="閉じる"
+            aria-label={closeLabel}
           >
             <X aria-hidden="true" />
           </button>
@@ -590,6 +608,9 @@ export default function App() {
   const updateInProgressRef = useRef(false)
   const editorOperationGateRef = useRef(new AsyncOperationGate())
 
+  const [locale, setLocale] = useState<AppLocale>(() => loadLocale())
+  const [theme, setTheme] = useState<AppTheme>(() => loadTheme())
+  const [englishUi, setEnglishUi] = useState<EditorUiCopy | null>(null)
   const [tool, setTool] = useState<EditorTool>('select')
   const [layers, setLayers] = useState<LayerInfo[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -681,6 +702,51 @@ export default function App() {
     updateAvailable: false,
   })
   const updateAvailable = pwaState.updateAvailable && !updateDismissed
+  const ui = locale === 'en' && englishUi ? englishUi : JAPANESE_EDITOR_UI_COPY
+
+  const toggleLocale = useCallback(() => {
+    if (locale === 'en') {
+      setLocale('ja')
+      return
+    }
+    if (englishUi) {
+      setLocale('en')
+      return
+    }
+    void loadEnglishUiCopy().then((copy) => {
+      setEnglishUi(copy)
+      setLocale('en')
+    })
+  }, [englishUi, locale])
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+  }, [])
+
+  useEffect(() => {
+    if (locale !== 'en' || englishUi) return
+    let active = true
+    void loadEnglishUiCopy().then((copy) => {
+      if (active) setEnglishUi(copy)
+    })
+    return () => {
+      active = false
+    }
+  }, [englishUi, locale])
+
+  useEffect(() => {
+    document.documentElement.lang = locale
+    document.documentElement.dataset.theme = theme
+    document.title = ui.pageTitle
+    document
+      .querySelector<HTMLMetaElement>('meta[name="description"]')
+      ?.setAttribute('content', ui.pageDescription)
+    document
+      .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute('content', themeColorFor(theme))
+    saveLocale(locale)
+    saveTheme(theme)
+  }, [locale, theme, ui.pageDescription, ui.pageTitle])
 
   useEffect(() => {
     let active = true
@@ -1602,10 +1668,13 @@ export default function App() {
       setTool(nextTool)
       setStatus({
         kind: 'info',
-        message: `${TOOL_ITEMS.find((item) => item.id === nextTool)?.label ?? nextTool}ツール`,
+        message:
+          locale === 'ja'
+            ? `${ui.toolLabels[nextTool]}ツール`
+            : `${ui.toolLabels[nextTool]} tool selected`,
       })
     },
-    [brushColor, brushOpacity, brushSize],
+    [brushColor, brushOpacity, brushSize, locale, ui],
   )
 
   const restoreSnapshot = useCallback(
@@ -2561,12 +2630,12 @@ export default function App() {
 
   const autosaveLabel =
     autosaveState === 'saving'
-      ? '保存中…'
+      ? ui.saving
       : autosaveState === 'saved'
-        ? '自動保存済み'
+        ? ui.autosaved
         : autosaveState === 'failed'
-          ? '自動保存失敗'
-          : 'ローカル編集'
+          ? ui.autosaveFailed
+          : ui.localEditing
 
   return (
     <div
@@ -2601,7 +2670,7 @@ export default function App() {
           <button
             className="topbar-button mobile-menu"
             type="button"
-            aria-label="メニュー"
+            aria-label={ui.menu}
             aria-haspopup="dialog"
             onClick={() => setActiveDialog('menu')}
           >
@@ -2613,7 +2682,7 @@ export default function App() {
             onClick={() => setActiveDialog('new')}
           >
             <Plus aria-hidden="true" />
-            新規
+            {ui.new}
           </button>
           <button
             className="topbar-button"
@@ -2621,7 +2690,7 @@ export default function App() {
             onClick={() => projectInputRef.current?.click()}
           >
             <Glyph>↑</Glyph>
-            開く
+            {ui.open}
           </button>
           <button
             className="topbar-button"
@@ -2629,7 +2698,7 @@ export default function App() {
             onClick={() => void saveProject()}
           >
             <Save aria-hidden="true" />
-            保存
+            {ui.save}
           </button>
           <button
             className="topbar-button"
@@ -2637,7 +2706,7 @@ export default function App() {
             onClick={() => setActiveDialog('studio')}
           >
             <Sparkles aria-hidden="true" />
-            Studio
+            {ui.studio}
           </button>
           <button
             className="topbar-button accent"
@@ -2645,13 +2714,13 @@ export default function App() {
             onClick={() => setActiveDialog('export')}
           >
             <Download aria-hidden="true" />
-            書き出す
+            {ui.export}
           </button>
         </div>
 
         <div className="document-title">
           <input
-            aria-label="プロジェクト名"
+            aria-label={ui.projectName}
             value={projectName}
             onChange={(event) => {
               const nextName = event.target.value
@@ -2664,21 +2733,32 @@ export default function App() {
               if (snapshot) scheduleAutosave(snapshot)
             }}
           />
-          <span>{dirty ? '未保存の変更' : '保存済み'}</span>
+          <span>{dirty ? ui.unsavedChanges : ui.saved}</span>
         </div>
 
         <div className="topbar-meta">
           <span
             className={`save-state ${autosaveState}`}
-            title="編集内容は端末内にのみ自動保存されます"
+            title={ui.savedLocally}
           >
             {autosaveState === 'failed' ? <Glyph>☁×</Glyph> : <Glyph>☁</Glyph>}
             <span>{autosaveLabel}</span>
           </span>
+          <Suspense fallback={null}>
+            <PreferenceControls
+              locale={locale}
+              theme={theme}
+              copy={ui}
+              onToggleLocale={toggleLocale}
+              onToggleTheme={toggleTheme}
+              onOpenManual={() => setActiveDialog('manual')}
+            />
+          </Suspense>
           <button
             className="icon-button"
             type="button"
-            aria-label="ショートカット一覧"
+            aria-label={ui.shortcuts}
+            title={ui.shortcuts}
             onClick={() => setActiveDialog('shortcuts')}
           >
             <Glyph>?</Glyph>
@@ -2687,18 +2767,19 @@ export default function App() {
       </header>
 
       <div className="workspace">
-        <aside className="tool-rail" aria-label="編集ツール">
-          <div className="tool-group" role="toolbar" aria-label="基本ツール">
+        <aside className="tool-rail" aria-label={ui.tools}>
+          <div className="tool-group" role="toolbar" aria-label={ui.basicTools}>
             {TOOL_ITEMS.map((item) => {
               const Icon = item.icon
+              const label = ui.toolLabels[item.id]
               return (
                 <button
                   key={item.id}
                   className={`tool-button ${tool === item.id ? 'active' : ''}`}
                   type="button"
-                  aria-label={`${item.label} (${item.shortcut})`}
+                  aria-label={`${label} (${item.shortcut})`}
                   aria-pressed={tool === item.id}
-                  title={`${item.label} · ${item.shortcut}`}
+                  title={`${label} · ${item.shortcut}`}
                   onClick={() => activateTool(item.id)}
                 >
                   <Icon aria-hidden="true" />
@@ -2708,12 +2789,12 @@ export default function App() {
             })}
           </div>
           <div className="tool-divider" />
-          <div className="tool-group" role="toolbar" aria-label="追加ツール">
+          <div className="tool-group" role="toolbar" aria-label={ui.addTools}>
             <button
               className="tool-button"
               type="button"
-              aria-label="画像を追加"
-              title="画像を追加"
+              aria-label={ui.addImage}
+              title={ui.addImage}
               onClick={() => imageInputRef.current?.click()}
             >
               <Glyph>＋</Glyph>
@@ -2721,8 +2802,8 @@ export default function App() {
             <button
               className="tool-button"
               type="button"
-              aria-label="矩形を追加"
-              title="矩形"
+              aria-label={ui.addRectangle}
+              title={ui.addRectangle}
               onClick={() => addShape('rect')}
             >
               <Glyph>■</Glyph>
@@ -2730,8 +2811,8 @@ export default function App() {
             <button
               className="tool-button"
               type="button"
-              aria-label="楕円を追加"
-              title="楕円"
+              aria-label={ui.addEllipse}
+              title={ui.addEllipse}
               onClick={() => addShape('ellipse')}
             >
               <Glyph>●</Glyph>
@@ -2739,8 +2820,8 @@ export default function App() {
             <button
               className="tool-button"
               type="button"
-              aria-label="テキストを追加"
-              title="テキスト"
+              aria-label={ui.addText}
+              title={ui.addText}
               onClick={addText}
             >
               <Type aria-hidden="true" />
@@ -2748,8 +2829,8 @@ export default function App() {
             <button
               className="tool-button"
               type="button"
-              aria-label="選択範囲へ切り抜く"
-              title="選択オブジェクトの範囲へ切り抜く"
+              aria-label={ui.cropToSelection}
+              title={ui.cropToSelection}
               onClick={() => {
                 if (engineRef.current?.cropToSelection()) {
                   refreshEditorState()
@@ -2761,8 +2842,8 @@ export default function App() {
             </button>
           </div>
           <div className="rail-spacer" />
-          <label className="color-well" title="描画色">
-            <span className="sr-only">描画色</span>
+          <label className="color-well" title={ui.drawingColor}>
+            <span className="sr-only">{ui.drawingColor}</span>
             <input
               type="color"
               value={
@@ -2780,15 +2861,15 @@ export default function App() {
         </aside>
 
         <main className="editor-main">
-          <section className="context-bar" aria-label="ツールオプション">
+          <section className="context-bar" aria-label={ui.toolOptions}>
             <div className="history-controls">
               <button
                 className="icon-button"
                 type="button"
                 disabled={!historyState.canUndo}
                 onClick={() => void undo()}
-                aria-label="元に戻す"
-                title="元に戻す"
+                aria-label={ui.undo}
+                title={ui.undo}
               >
                 <Undo2 aria-hidden="true" />
               </button>
@@ -2797,8 +2878,8 @@ export default function App() {
                 type="button"
                 disabled={!historyState.canRedo}
                 onClick={() => void redo()}
-                aria-label="やり直す"
-                title="やり直す"
+                aria-label={ui.redo}
+                title={ui.redo}
               >
                 <Redo2 aria-hidden="true" />
               </button>
@@ -2807,7 +2888,7 @@ export default function App() {
             {(tool === 'brush' || tool === 'eraser') && (
               <div className="brush-options">
                 <label className="inline-field">
-                  <span>サイズ</span>
+                  <span>{ui.size}</span>
                   <input
                     type="range"
                     min="1"
@@ -2820,7 +2901,7 @@ export default function App() {
                   <output>{brushSize}px</output>
                 </label>
                 <label className="inline-field opacity-option">
-                  <span>不透明度</span>
+                  <span>{ui.opacity}</span>
                   <input
                     type="range"
                     min="0.05"
@@ -2844,7 +2925,7 @@ export default function App() {
                     ['Y', 'top'],
                     ['W', 'width'],
                     ['H', 'height'],
-                    ['角度', 'angle'],
+                    [ui.angle, 'angle'],
                   ] as const
                 ).map(([label, field]) => (
                   <label className="compact-number" key={field}>
@@ -2864,7 +2945,7 @@ export default function App() {
                 <button
                   className={`icon-button ${selectionTransform.flipX ? 'active' : ''}`}
                   type="button"
-                  aria-label="左右反転"
+                  aria-label={ui.flipHorizontal}
                   aria-pressed={selectionTransform.flipX}
                   onClick={() =>
                     updateTransform('flipX', !selectionTransform.flipX)
@@ -2875,7 +2956,7 @@ export default function App() {
                 <button
                   className={`icon-button ${selectionTransform.flipY ? 'active' : ''}`}
                   type="button"
-                  aria-label="上下反転"
+                  aria-label={ui.flipVertical}
                   aria-pressed={selectionTransform.flipY}
                   onClick={() =>
                     updateTransform('flipY', !selectionTransform.flipY)
@@ -2890,7 +2971,7 @@ export default function App() {
               <div
                 className="alignment-options"
                 role="toolbar"
-                aria-label="整列と分布"
+                aria-label={ui.alignmentAndDistribution}
               >
                 {(
                   [
@@ -2943,7 +3024,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 onClick={() => engineRef.current?.zoomOut()}
-                aria-label="縮小"
+                aria-label={ui.zoomOut}
               >
                 <ZoomOut aria-hidden="true" />
               </button>
@@ -2951,7 +3032,7 @@ export default function App() {
                 className="zoom-value"
                 type="button"
                 onClick={() => engineRef.current?.zoom100()}
-                title="100%表示"
+                title={ui.zoom100}
               >
                 {Math.round(zoom * 100)}%
               </button>
@@ -2959,7 +3040,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 onClick={() => engineRef.current?.zoomIn()}
-                aria-label="拡大"
+                aria-label={ui.zoomIn}
               >
                 <ZoomIn aria-hidden="true" />
               </button>
@@ -2967,7 +3048,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 onClick={fitCanvas}
-                aria-label="画面に合わせる"
+                aria-label={ui.fitCanvas}
               >
                 <Maximize2 aria-hidden="true" />
               </button>
@@ -2995,14 +3076,14 @@ export default function App() {
             </section>
           ) : null}
 
-          <section className="canvas-area" aria-label="画像編集キャンバス">
+          <section className="canvas-area" aria-label={ui.canvas}>
             <div className="canvas-rulers">
               <span>{documentSize.width} px</span>
               <span>{documentSize.height} px</span>
               <button
                 type="button"
                 draggable
-                title="キャンバスへドラッグして配置"
+                title={ui.dragGuide}
                 onClick={() =>
                   engineRef.current?.addGuide('x', documentSize.width / 2)
                 }
@@ -3010,12 +3091,12 @@ export default function App() {
                   engineRef.current?.addGuideFromPointer('x', event.nativeEvent)
                 }
               >
-                縦ガイド
+                {ui.verticalGuide}
               </button>
               <button
                 type="button"
                 draggable
-                title="キャンバスへドラッグして配置"
+                title={ui.dragGuide}
                 onClick={() =>
                   engineRef.current?.addGuide('y', documentSize.height / 2)
                 }
@@ -3023,22 +3104,22 @@ export default function App() {
                   engineRef.current?.addGuideFromPointer('y', event.nativeEvent)
                 }
               >
-                横ガイド
+                {ui.horizontalGuide}
               </button>
               <button
                 type="button"
                 onClick={() => engineRef.current?.clearGuides()}
               >
-                ガイド消去
+                {ui.clearGuides}
               </button>
               <label>
-                スナップ
+                {ui.snap}
                 <input
                   type="number"
                   min="1"
                   max="100"
                   defaultValue="8"
-                  aria-label="スナップ許容距離"
+                  aria-label={ui.snapTolerance}
                   onChange={(event) =>
                     engineRef.current?.setSnapTolerance(
                       Number(event.target.value),
@@ -3051,7 +3132,7 @@ export default function App() {
             <div className="canvas-viewport" ref={canvasViewportRef}>
               <canvas
                 ref={canvasElementRef}
-                aria-label={`${projectName}の編集キャンバス。レイヤーパネルと数値入力で代替操作できます。`}
+                aria-label={ui.canvasDescription(projectName)}
               />
               {layers.length === 0 && !busy ? (
                 <div className="empty-state">
@@ -3059,20 +3140,19 @@ export default function App() {
                     <Sparkles aria-hidden="true" />
                   </span>
                   <p className="eyebrow">YOUR CANVAS IS READY</p>
-                  <h1>画像を開いて、つくり始める</h1>
-                  <p>
-                    ファイルは端末内で処理されます。
-                    <br />
-                    ここへドロップするか、画像を選択してください。
-                  </p>
+                  <h1>{ui.emptyHeading}</h1>
+                  <p>{ui.emptyDescription}</p>
                   <button
                     type="button"
                     onClick={() => imageInputRef.current?.click()}
                   >
                     <Glyph>＋</Glyph>
-                    画像を選択
+                    {ui.chooseImage}
                   </button>
-                  <div className="format-chips" aria-label="対応形式">
+                  <div
+                    className="format-chips"
+                    aria-label={ui.supportedFormats}
+                  >
                     <span>PNG</span>
                     <span>JPEG</span>
                     <span>WEBP</span>
@@ -3084,7 +3164,7 @@ export default function App() {
               {busy ? (
                 <div className="busy-overlay" role="status">
                   <span className="spinner" />
-                  処理しています…
+                  {ui.processing}
                 </div>
               ) : null}
             </div>
@@ -3100,7 +3180,7 @@ export default function App() {
             <span>
               {documentSize.width} × {documentSize.height}px
             </span>
-            <span>{layers.length} レイヤー</span>
+            <span>{ui.layersCount(layers.length)}</span>
           </footer>
         </main>
 
@@ -3941,8 +4021,9 @@ export default function App() {
 
       {activeDialog === 'menu' ? (
         <Modal
-          title="ファイルメニュー"
-          description="プロジェクトの作成、読み込み、保存、画像の書き出しを行います。"
+          title={ui.fileMenuTitle}
+          description={ui.fileMenuDescription}
+          closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
           <div className="modal-form">
@@ -3952,7 +4033,7 @@ export default function App() {
               onClick={() => setActiveDialog('new')}
             >
               <Plus aria-hidden="true" />
-              新しいキャンバス
+              {ui.newCanvas}
             </button>
             <button
               className="secondary-button full-width"
@@ -3963,7 +4044,7 @@ export default function App() {
               }}
             >
               <Glyph>↑</Glyph>
-              プロジェクトを開く
+              {ui.openProject}
             </button>
             <button
               className="secondary-button full-width"
@@ -3974,7 +4055,7 @@ export default function App() {
               }}
             >
               <Save aria-hidden="true" />
-              プロジェクトを保存
+              {ui.saveProject}
             </button>
             <button
               className="primary-button full-width"
@@ -3982,7 +4063,7 @@ export default function App() {
               onClick={() => setActiveDialog('export')}
             >
               <Download aria-hidden="true" />
-              画像を書き出す
+              {ui.exportImage}
             </button>
             <button
               className="secondary-button full-width"
@@ -3990,7 +4071,7 @@ export default function App() {
               onClick={() => setActiveDialog('studio')}
             >
               <Sparkles aria-hidden="true" />
-              拡張ツールを開く
+              {ui.openStudio}
             </button>
           </div>
         </Modal>
@@ -3998,8 +4079,9 @@ export default function App() {
 
       {activeDialog === 'new' ? (
         <Modal
-          title="新しいキャンバス"
-          description="未保存の編集がある場合は確認してから切り替えます。新しいキャンバスのサイズを指定してください。"
+          title={ui.newCanvasTitle}
+          description={ui.newCanvasDescription}
+          closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
           <form
@@ -4007,7 +4089,7 @@ export default function App() {
             onSubmit={(event) => void createNewDocument(event)}
           >
             <label>
-              <span>プロジェクト名</span>
+              <span>{ui.projectName}</span>
               <input
                 autoFocus
                 value={newDocument.name}
@@ -4021,7 +4103,7 @@ export default function App() {
             </label>
             <div className="form-grid">
               <label>
-                <span>幅 (px)</span>
+                <span>{ui.width}</span>
                 <input
                   type="number"
                   required
@@ -4037,7 +4119,7 @@ export default function App() {
                 />
               </label>
               <label>
-                <span>高さ (px)</span>
+                <span>{ui.height}</span>
                 <input
                   type="number"
                   required
@@ -4054,7 +4136,7 @@ export default function App() {
               </label>
             </div>
             <div className="preset-row">
-              <span>プリセット</span>
+              <span>{ui.presets}</span>
               {[
                 ['HD', 1280, 720],
                 ['Full HD', 1920, 1080],
@@ -4082,11 +4164,11 @@ export default function App() {
                 type="button"
                 onClick={() => setActiveDialog(null)}
               >
-                キャンセル
+                {ui.cancel}
               </button>
               <button className="primary-button" type="submit">
                 <Plus aria-hidden="true" />
-                作成
+                {ui.create}
               </button>
             </div>
           </form>
@@ -4095,13 +4177,14 @@ export default function App() {
 
       {activeDialog === 'export' ? (
         <Modal
-          title="画像を書き出す"
-          description="すべての表示レイヤーを合成して、端末へ保存します。"
+          title={ui.exportTitle}
+          description={ui.exportDescription}
+          closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
           <form className="modal-form" onSubmit={exportImage}>
             <fieldset className="format-options">
-              <legend>ファイル形式</legend>
+              <legend>{ui.fileFormat}</legend>
               {(['png', 'jpeg', 'webp', 'svg'] as const).map((format) => (
                 <label
                   key={format}
@@ -4119,26 +4202,18 @@ export default function App() {
                   <span>
                     {format === 'jpeg' ? 'JPG' : format.toUpperCase()}
                   </span>
-                  <small>
-                    {format === 'png'
-                      ? '透明度・高品質'
-                      : format === 'jpeg'
-                        ? '写真・小容量'
-                        : format === 'webp'
-                          ? '高圧縮・透明度'
-                          : '編集可能なベクター'}
-                  </small>
+                  <small>{ui.formatNotes[format]}</small>
                 </label>
               ))}
             </fieldset>
             <label className="adjustment-control">
               <span>
-                品質
+                {ui.quality}
                 <output>{Math.round(exportSettings.quality * 100)}%</output>
               </span>
               <input
                 type="range"
-                aria-label="品質"
+                aria-label={ui.quality}
                 min="0.1"
                 max="1"
                 step="0.01"
@@ -4158,7 +4233,7 @@ export default function App() {
             {exportSettings.format === 'svg' ? (
               <>
                 <label>
-                  <span>SVGの範囲</span>
+                  <span>{ui.svgScope}</span>
                   <select
                     value={exportSettings.svgScope}
                     onChange={(event) =>
@@ -4169,8 +4244,8 @@ export default function App() {
                       }))
                     }
                   >
-                    <option value="document">キャンバス全体</option>
-                    <option value="selection">選択オブジェクト</option>
+                    <option value="document">{ui.wholeCanvas}</option>
+                    <option value="selection">{ui.selectedObject}</option>
                   </select>
                 </label>
                 <p className="panel-intro">
@@ -4179,7 +4254,7 @@ export default function App() {
               </>
             ) : null}
             <label>
-              <span>出力倍率</span>
+              <span>{ui.scale}</span>
               <select
                 disabled={exportSettings.format === 'svg'}
                 value={exportSettings.multiplier}
@@ -4229,11 +4304,11 @@ export default function App() {
                 type="button"
                 onClick={() => setActiveDialog(null)}
               >
-                キャンセル
+                {ui.cancel}
               </button>
               <button className="primary-button" type="submit">
                 <Download aria-hidden="true" />
-                ダウンロード
+                {ui.download}
               </button>
             </div>
           </form>
@@ -4242,17 +4317,22 @@ export default function App() {
 
       {activeDialog === 'studio' ? (
         <Modal
-          title="拡張ツール"
-          description="ロゴ生成、自動化、選択・背景除去・スクリプトを端末内で実行します。"
+          title={ui.studioTitle}
+          description={ui.studioDescription}
+          closeLabel={ui.close}
           wide
           onClose={() => setActiveDialog(null)}
         >
-          <div className="studio-tabs" role="tablist" aria-label="拡張ツール">
+          <div
+            className="studio-tabs"
+            role="tablist"
+            aria-label={ui.studioTitle}
+          >
             {(
               [
-                ['logo', 'ロゴ生成'],
-                ['automation', '自動化・バッチ'],
-                ['advanced', '選択・背景・スクリプト'],
+                ['logo', ui.studioTabs.logo],
+                ['automation', ui.studioTabs.automation],
+                ['advanced', ui.studioTabs.advanced],
               ] as const
             ).map(([tab, label]) => (
               <button
@@ -4277,7 +4357,7 @@ export default function App() {
             <Suspense
               fallback={
                 <div className="studio-loading" role="status">
-                  拡張ツールを読み込んでいます…
+                  {ui.studioLoading}
                 </div>
               }
             >
@@ -4559,27 +4639,28 @@ export default function App() {
         </Modal>
       ) : null}
 
+      {activeDialog === 'manual' ? (
+        <Modal
+          title={ui.manualTitle}
+          description={ui.manualDescription}
+          closeLabel={ui.close}
+          onClose={() => setActiveDialog(null)}
+        >
+          <Suspense fallback={<div className="manual-content" role="status" />}>
+            <ManualContent locale={locale} />
+          </Suspense>
+        </Modal>
+      ) : null}
+
       {activeDialog === 'shortcuts' ? (
         <Modal
-          title="キーボードショートカット"
-          description="入力欄へフォーカスしている間は、1文字のツール切替を実行しません。"
+          title={ui.shortcutsTitle}
+          description={ui.shortcutsDescription}
+          closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
           <div className="shortcut-grid">
-            {[
-              ['選択ツール', 'V'],
-              ['ブラシ', 'B'],
-              ['消しゴム', 'E'],
-              ['手のひら', 'H'],
-              ['元に戻す', '⌘ / Ctrl + Z'],
-              ['やり直す', '⇧⌘ + Z / Ctrl + Y'],
-              ['コピー / 切取 / 貼付', '⌘ / Ctrl + C / X / V'],
-              ['保存', '⌘ / Ctrl + S'],
-              ['開く', '⌘ / Ctrl + O'],
-              ['拡大 / 縮小 / 100%', '+ / − / 0'],
-              ['削除', 'Delete'],
-              ['この一覧', '?'],
-            ].map(([label, keys]) => (
+            {ui.shortcutRows.map(([label, keys]) => (
               <div key={label}>
                 <span>{label}</span>
                 <kbd>{keys}</kbd>
@@ -4590,7 +4671,7 @@ export default function App() {
             <Glyph>⌑</Glyph>
             <span>
               <strong>Local-first</strong>
-              画像と編集内容はサーバーへ送信されません。
+              {ui.localOnlyHint}
             </span>
           </div>
         </Modal>

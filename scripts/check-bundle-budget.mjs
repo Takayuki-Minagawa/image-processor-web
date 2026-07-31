@@ -2,7 +2,9 @@ import { gzipSync } from 'node:zlib'
 import { readFile, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 
-const BASELINE_ENTRY_BYTES = 581_120
+// The default Japanese shell now includes device-local theme and language
+// preference handling. English copy and the guide remain split into chunks.
+const BASELINE_ENTRY_BYTES = 586_000
 const BASELINE_ENTRY_GZIP_BYTES = 180_660
 const MAXIMUM_GROWTH = 1.1
 

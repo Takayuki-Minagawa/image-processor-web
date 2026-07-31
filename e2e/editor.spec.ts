@@ -93,6 +93,45 @@ test.describe('Pixelweave editor', () => {
     ).toEqual([])
   })
 
+  test('表示テーマ・言語・簡易マニュアルを切り替えられる', async ({ page }) => {
+    const languageToggle = page.getByRole('button', {
+      name: '英語表示に切り替え',
+    })
+    await expect(languageToggle).toBeVisible()
+    await languageToggle.click()
+
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(page.getByRole('button', { name: 'New' })).toBeVisible()
+    await expect(
+      page.getByRole('button', { name: 'Switch to light mode' }),
+    ).toBeVisible()
+
+    await page.getByRole('button', { name: 'Switch to light mode' }).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
+      'content',
+      '#f5f7fb',
+    )
+
+    const manual = page.getByRole('button', { name: 'Manual' })
+    await manual.click()
+    const dialog = page.getByRole('dialog', { name: 'Quick guide' })
+    await expect(dialog).toBeVisible()
+    await expect(
+      dialog.getByText('1. Open an image or start a canvas', { exact: true }),
+    ).toBeVisible()
+    await expect(
+      dialog.getByText('About local processing', { exact: true }),
+    ).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(manual).toBeFocused()
+
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  })
+
   test('新規キャンバスを指定した名前と寸法で作成する', async ({ page }) => {
     await createCanvas(page, 'バナー案', 960, 540)
 

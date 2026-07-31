@@ -293,6 +293,43 @@
   background: rgba(239, 68, 68, 0.14);
 }
 
+:root[data-theme='light'] .advanced-filter-presets,
+:root[data-theme='light'] .advanced-filter-preview {
+  border-color: rgba(91, 105, 134, 0.24);
+  background: rgba(229, 234, 242, 0.72);
+}
+
+:root[data-theme='light'] .advanced-filter-presets select,
+:root[data-theme='light'] .advanced-filter-presets input,
+:root[data-theme='light'] .advanced-filter-number input {
+  border-color: rgba(91, 105, 134, 0.34);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+:root[data-theme='light'] .advanced-filter-panel button {
+  border-color: rgba(91, 105, 134, 0.3);
+  background: rgba(229, 234, 242, 0.96);
+}
+
+:root[data-theme='light'] .advanced-filter-section,
+:root[data-theme='light'] .advanced-filter-preview-images img,
+:root[data-theme='light'] .advanced-filter-preview-placeholder,
+:root[data-theme='light'] .tone-curve-preview,
+:root[data-theme='light'] .gradient-map-preview {
+  border-color: rgba(91, 105, 134, 0.28);
+}
+
+:root[data-theme='light'] .advanced-filter-preview-images img,
+:root[data-theme='light'] .advanced-filter-preview-placeholder,
+:root[data-theme='light'] .tone-curve-preview,
+:root[data-theme='light'] .gradient-map-preview {
+  background-color: #edf0f5;
+}
+
+:root[data-theme='light'] .advanced-filter-preview-error {
+  color: #b4233f;
+}
+
 @media (max-width: 520px) {
   .advanced-filter-fields {
     grid-template-columns: 1fr;

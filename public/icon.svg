@@ -1,11 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="title"
+>
+  <title id="title">Pixelweave Studio</title>
   <defs>
-    <linearGradient id="g" x1="76" y1="55" x2="444" y2="455" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7c6cff"/>
-      <stop offset="1" stop-color="#25d0a5"/>
+    <linearGradient
+      id="pixelweave-gradient"
+      x1="136"
+      y1="120"
+      x2="390"
+      y2="392"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#a78bfa" />
+      <stop offset="0.48" stop-color="#7c6cff" />
+      <stop offset="1" stop-color="#2dd4bf" />
     </linearGradient>
+    <style>
+      .surface {
+        fill: #f8faff;
+      }
+      .edge {
+        stroke: #152238;
+      }
+      .guide {
+        stroke: #64748b;
+      }
+      @media (prefers-color-scheme: dark) {
+        .surface {
+          fill: #101827;
+        }
+        .edge {
+          stroke: #e7eef9;
+        }
+        .guide {
+          stroke: #9aabc2;
+        }
+      }
+    </style>
   </defs>
-  <rect width="512" height="512" rx="116" fill="#11131a"/>
-  <path d="M123 132h168c68 0 105 39 105 97 0 67-48 105-120 105h-55v61h-98V132Zm98 73v65h52c26 0 41-10 41-33 0-22-15-32-41-32h-52Z" fill="url(#g)"/>
-  <circle cx="380" cy="378" r="34" fill="#f5b841"/>
+  <rect class="surface" x="24" y="24" width="464" height="464" rx="128" />
+  <rect
+    class="edge"
+    x="30"
+    y="30"
+    width="452"
+    height="452"
+    rx="122"
+    fill="none"
+    stroke-width="20"
+  />
+  <path
+    d="M136 392V120h140c81.6 0 140 52.8 140 120.8S357.6 336 276 336h-60v56h-80Zm80-203.2v80.8h56c35.2 0 54.4-14.4 54.4-40.4 0-26.4-19.2-40.4-54.4-40.4h-56Z"
+    fill="url(#pixelweave-gradient)"
+  />
+  <path
+    class="guide"
+    d="M356 132h36v36M392 344v36h-36"
+    fill="none"
+    stroke-linecap="round"
+    stroke-width="16"
+  />
+  <circle cx="374" cy="254" r="18" fill="#fbbf24" />
 </svg>
