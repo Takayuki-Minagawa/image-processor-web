@@ -130,13 +130,17 @@ describe('CPU filter kernels', () => {
       }).data,
     ]).toEqual([245, 235, 225, 77])
 
+    // Colour is averaged weighted by alpha, so the twice-as-opaque right
+    // pixel contributes twice as much: the premultiplied average is
+    // (0*100 + 100*200) / 300 = 66.7, which at the averaged alpha of 150
+    // round-trips back to a straight colour of 67.
     const block = pixelBuffer(2, 1, [0, 10, 20, 100, 100, 110, 120, 200])
     expect([
       ...applyFilterCpu(block, {
         id: 'pixelate',
         params: { size: 2 },
       }).data,
-    ]).toEqual([50, 60, 70, 150, 50, 60, 70, 150])
+    ]).toEqual([67, 77, 87, 150, 67, 77, 87, 150])
 
     const inverse = createIdentityCurve().map((value) => 255 - value)
     expect([
@@ -182,6 +186,62 @@ describe('CPU filter kernels', () => {
         params: { size: 0 },
       }),
     ).toThrow('must be a finite number')
+  })
+
+  it('leaves flat regions untouched when embossing instead of blowing them out', () => {
+    const flat = (value: number): PixelBuffer =>
+      pixelBuffer(
+        3,
+        3,
+        Array.from({ length: 9 }, () => [value, value, value, 255]).flat(),
+      )
+
+    for (const value of [60, 128, 200]) {
+      for (const strength of [0, 1, 4]) {
+        const output = applyFilterCpu(flat(value), {
+          ...createDefaultFilterOperation('emboss'),
+          params: { strength },
+        })
+        // A uniform image has no relief to emboss, so every channel must come
+        // back unchanged rather than clipping toward white.
+        expect(output.data[0]).toBe(value)
+        expect(output.data[17]).toBe(value)
+      }
+    }
+  })
+
+  it('keeps emboss at strength 0 an exact identity', () => {
+    const input = fixture()
+    const output = applyFilterCpu(input, {
+      ...createDefaultFilterOperation('emboss'),
+      params: { strength: 0 },
+    })
+    expect([...output.data]).toEqual([...input.data])
+  })
+
+  it('weights pixelate colour by alpha so transparent neighbours do not darken a block', () => {
+    const input = pixelBuffer(
+      2,
+      2,
+      [255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    const output = applyFilterCpu(input, {
+      ...createDefaultFilterOperation('pixelate'),
+      params: { size: 2 },
+    })
+
+    // The only visible pixel is pure red, so the averaged block keeps that
+    // colour and only its coverage (alpha) drops.
+    expect([...output.data.slice(0, 4)]).toEqual([255, 0, 0, 64])
+  })
+
+  it('reports a fully transparent pixelate block as transparent', () => {
+    const input = pixelBuffer(2, 2, new Array(16).fill(0))
+    const output = applyFilterCpu(input, {
+      ...createDefaultFilterOperation('pixelate'),
+      params: { size: 2 },
+    })
+    expect([...output.data.slice(0, 4)]).toEqual([0, 0, 0, 0])
   })
 
   it('rejects malformed and oversized pixel buffers', () => {

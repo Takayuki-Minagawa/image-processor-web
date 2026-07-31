@@ -201,3 +201,37 @@ export const relativeLuminance = (color: RgbColor): number => {
 
 export const readableTextColor = (background: string): '#000000' | '#ffffff' =>
   relativeLuminance(parseHexColor(background)) > 0.42 ? '#000000' : '#ffffff'
+
+/** WCAG 2.1 contrast ratio, from 1 (identical) to 21 (black on white). */
+export const contrastRatio = (left: string, right: string): number => {
+  const leftLuminance = relativeLuminance(parseHexColor(left))
+  const rightLuminance = relativeLuminance(parseHexColor(right))
+  const lighter = Math.max(leftLuminance, rightLuminance)
+  const darker = Math.min(leftLuminance, rightLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+/** WCAG AA for normal-size body text. */
+export const MINIMUM_TEXT_CONTRAST = 4.5
+
+/**
+ * Picks the first candidate that is legible on `surface`, preferring the
+ * earlier (more on-brand) entries and falling back to plain black or white
+ * when no candidate clears the threshold.
+ */
+export const readableOnSurface = <T extends string>(
+  candidates: readonly T[],
+  surface: string,
+): T | '#000000' | '#ffffff' => {
+  let best: { color: T; ratio: number } | null = null
+  for (const color of candidates) {
+    const ratio = contrastRatio(color, surface)
+    if (ratio >= MINIMUM_TEXT_CONTRAST) {
+      return color
+    }
+    if (!best || ratio > best.ratio) {
+      best = { color, ratio }
+    }
+  }
+  return readableTextColor(surface)
+}

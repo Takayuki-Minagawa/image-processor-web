@@ -4,7 +4,7 @@
 
 初期計画のPhase 1〜4で完成したlocal-first画像編集MVPを維持したまま、`FEATURE_EXPANSION_WORK_PLAN.md`のP1〜P7を実装した。機能拡張は、レンダラーに依存しない純粋ロジック、境界を検証するunit/component test、Fabric.js editorへのadapter、Studio UIに分けている。
 
-背景除去にはimmutable revisionへ固定したU2NetPを採用した。モデルbytesは初期bundleへ同梱せず、取得サイズを示して明示同意を得た後にだけ背景除去経路が固定URLから遅延取得する。Worker対応環境ではdownload、cache、推論を背景除去Workerが所有する。SHA-256検証済みbytesをOPFSへcacheし、ONNX Runtime WebはWebGPUを優先してWASMへfallbackする。ロゴ用フォント資産は同梱せず、端末のsystem fontへfallbackする。
+背景除去にはimmutable revisionへ固定したU2NetPを採用した。モデルbytesは初期bundleへ同梱せず、取得サイズを示して明示同意を得た後にだけ背景除去経路が固定URLから遅延取得する。Worker対応環境ではdownload、cache、推論を背景除去Workerが所有する。SHA-256検証済みbytesをOPFSへcacheし、ONNX Runtime WebはWebGPUを優先してWASMへfallbackする。ロゴ用フォントはOFL-1.1のLatin variable fontを同梱・自己ホストし、Latin以外はsystem fontへfallbackする。
 
 ## 完了した製品フロー
 
@@ -26,7 +26,7 @@
 | P2       | 直列化可能な操作コマンド、semantic target、dispatcher、マクロ記録、パラメータ解決、`.pwxmacro.json`、local repository、atomic replay                                                                                                         | 既存snapshot履歴を維持。再生中は中間履歴を抑止し、成功時に1件commit、失敗・キャンセル時に完全rollback                           |
 | P3       | decode → command → encode Worker、Transferable、進捗・キャンセル、複数ファイルcontroller、直接フォルダ出力、ZIP fallback、アイコンプリセット                                                                                                 | WorkerはDOMとeditor stateを所有せず、事前検証済みのbatch-safeコマンドだけを実行                                                 |
 | P4       | 14種の追加フィルターregistry、実画像preview、version付きpreset companion schema、custom WebGL shader、決定論的CPU kernel、再編集可能な調整レイヤー、ラスタライズ                                                                             | P2 recipeとversioning・validation原則を共有するが、nested filter parameterを型付きで保つため`.pwxmacro.json`とは分離する        |
-| P5       | 画像パレット抽出、4種の配色調和、検証付きtemplate schema、20種類の組み込みtemplate、seed付き候補生成、レイアウト・配色・フォントのlock、編集可能レイヤーへの展開                                                                             | 生成AIと外部通信は不使用。フォントファイルは同梱せず、端末のインストール済みfontとgeneric familyを使用                          |
+| P5       | 画像パレット抽出、4種の配色調和、検証付きtemplate schema、20種類の組み込みtemplate、seed付き候補生成、レイアウト・配色・フォントのlock、編集可能レイヤーへの展開                                                                             | 生成AIと外部通信は不使用。OFL-1.1のLatin variable fontを同梱・自己ホストし、Latin以外はgeneric familyへfallback                 |
 | P6       | 不変8bit選択マスク、raw/RLE lossless codec、replace/add/subtract/intersect、反転、フェザー、拡張・縮小、polygon rasterize、flood fill、Worker protocol、マーチングアンツ、ブラシ/消しゴムclip、pixel-delete、選択フィルターWorker、Studio UI | マスクはドキュメント座標の正本。サイズとdecoded pixelsをallocation前に検証し、公開境界では防御的コピー                          |
 | P7       | pinned U2NetP descriptor、明示同意、固定URL取得、SHA-256、OPFS cache、ONNX Runtime Web遅延load、WebGPU→WASM、背景除去Worker、決定論fallback、saved DSL scripts、`runScript` macro、Studio UI                                                 | モデルbytesとruntimeは初期bundle / app shellへ含めない。DSLはwhitelist以外のglobal、network、DOM、import、prototype、loopを拒否 |
 
@@ -84,7 +84,7 @@ ZIPは外部依存なしのZIP32 stored形式で決定論的に生成する。CR
 
 20種類の組み込みtemplateとseed付き組み合わせ生成から、既定で12件以上の候補を表示する。選択候補のレイアウト、配色、fontを個別に固定して再生成し、決定した候補は通常の図形・テキストレイヤーとして編集・SVG/画像書き出しへ渡せる。
 
-フォントassetは同梱していない。font pairはCSS family候補だけを持ち、端末にない場合は`system-ui`、`sans-serif`、`serif`へfallbackする。このため、候補preview、Fabric canvas、batch透かしの字形・文字幅はOSとインストール済みfontで変わり得る。
+font pairが参照するInter、Space Grotesk、Bitter、Manrope（いずれもSIL Open Font License 1.1）は、Latinサブセットのvariable fontとして同梱・自己ホストする。font配信元へは接続しない。Fabricはtext生成時点で字幅を測ってレイアウトを確定するため、候補の挿入前に`ensureLogoFontsLoaded()`でfont読み込みを待つ。Latin以外（日本語など）は各stackのfallbackで描画するため、字形はOSに依存する。
 
 ## 選択・背景除去・スクリプト
 
@@ -106,7 +106,7 @@ ZIPは外部依存なしのZIP32 stored形式で決定論的に生成する。CR
 - 自動保存、マクロ、ユーザーpreset、取得・検証済みモデルcacheはorigin-scoped storageへ保存する。モデル実行への同意は保存しない。
 - SVGの外部resource参照を除去し、SVG importを暗黙のnetwork入口にしない。
 - 背景モデルはpinned descriptorと明示同意なしにloadしない。モデル取得以外の画像編集データは外部へ送信しない。
-- ONNX Runtime、モデルbytes、font assetを初期bundleとService Worker app shellへ含めない。
+- ONNX Runtimeとモデルbytesを初期bundleとService Worker app shellへ含めない。同梱fontはoffline描画のためapp shellへ含める。
 - PWA更新前に保留中編集をflushし、GitHub Pagesのsubpathとoffline shellを維持する。
 
 ## 意図的な制約と次の判断ゲート
@@ -115,7 +115,7 @@ ZIPは外部依存なしのZIP32 stored形式で決定論的に生成する。CR
 - PSD / XCF / OpenRaster、ICC / CMYK / 16bit、レイヤーgroup、Smart Object
 - 複数実画像corpusによるhair / 半透明境界の品質評価、実機WebGPU性能、VoiceOver / NVDA、Safari / Firefox実機
 
-モデルbytesの初期配布除外、system font fallback、安全なDSL、batch-safe制約は欠落ではなく、local-firstと能力制限を守るための意図的な製品境界である。任意JavaScript互換が必要になった場合は、既存境界を緩めず別ADRで判断する。
+モデルbytesの初期配布除外、Latin以外のsystem font fallback、安全なDSL、batch-safe制約は欠落ではなく、local-firstと能力制限を守るための意図的な製品境界である。任意JavaScript互換が必要になった場合は、既存境界を緩めず別ADRで判断する。
 
 ## 2026-07-31 MVPレビュー対応
 

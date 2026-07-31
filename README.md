@@ -137,3 +137,5 @@ PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証しま�
 ## ライセンス
 
 アプリ本体のライセンスは現時点で未指定です。再利用条件を公開するときに、リポジトリ方針として明示してください。主要な実行時依存はReact、Fabric.js、ONNX Runtime WebがMIT License、LucideがISC Licenseです。明示同意後に取得するU2NetPモデルはApache-2.0です。
+
+同梱フォントは[Inter](https://github.com/rsms/inter)、[Space Grotesk](https://github.com/floriankarsten/space-grotesk)、[Bitter](https://github.com/solmatas/Bitter)、[Manrope](https://github.com/sharanda/manrope)で、いずれもSIL Open Font License 1.1です。Latinサブセットのvariable版を同梱して自己ホストしており、フォント配信元へ接続することはありません。日本語などLatin以外の文字は、各フォントスタックのfallback（OSのシステムフォント）で描画されます。

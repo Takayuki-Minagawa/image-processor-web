@@ -28,8 +28,14 @@ const numberSource = (value: number): string => {
   if (!Number.isFinite(value)) {
     throw new TypeError('WebGL filter constants must be finite.')
   }
-  const source = Number(value.toFixed(9)).toString()
-  return source.includes('.') ? source : `${source}.0`
+  // toFixed(9) keeps nine decimals, so anything smaller than 5e-10 is already
+  // zero here. Using the fixed-point form directly avoids Number.toString()
+  // switching to exponential notation for small magnitudes, which used to
+  // emit invalid GLSL such as `1e-9.0` and silently disable the whole GPU
+  // chain (it throws at compile time and falls back to the CPU path).
+  const fixed = value.toFixed(9)
+  const trimmed = fixed.replace(/(\.\d*?)0+$/u, '$1').replace(/\.$/u, '.0')
+  return trimmed.includes('.') ? trimmed : `${trimmed}.0`
 }
 
 const colorSource = ({ r, g, b }: RgbColor): string =>
@@ -193,11 +199,16 @@ const operationBody = (
       const parameters = operation.params
       const centerX = (width - 1) / 2
       const centerY = (height - 1) / 2
+      const end = Math.min(1, parameters.midpoint + parameters.softness)
       return `
-        vec2 pixel = vec2(
-          vTextureCoordinate.x * ${numberSource(Math.max(0, width - 1))},
-          vTextureCoordinate.y * ${numberSource(Math.max(0, height - 1))}
-        );
+        // Must match the CPU path's integer pixel coordinate. Scaling the
+        // texture coordinate by (size - 1) instead lands half a pixel off and
+        // rescales by (size - 1) / size, which visibly shifts the falloff at
+        // small sizes or a narrow softness.
+        vec2 pixel = floor(vTextureCoordinate * vec2(
+          ${numberSource(width)},
+          ${numberSource(height)}
+        ));
         vec2 normalized = vec2(
           (pixel.x - ${numberSource(centerX)}) /
             ${numberSource(Math.max(1, centerX))},
@@ -205,13 +216,17 @@ const operationBody = (
             ${numberSource(Math.max(1, centerY))}
         );
         float distanceFromCenter = length(normalized) / 1.41421356237;
-        float strength = smoothstep(
+        // GLSL smoothstep is undefined when both edges are equal, which
+        // midpoint = 1 produces; the CPU path special-cases it as a step.
+        float strength = ${
+          parameters.midpoint === end
+            ? `(distanceFromCenter < ${numberSource(parameters.midpoint)} ? 0.0 : 1.0)`
+            : `smoothstep(
           ${numberSource(parameters.midpoint)},
-          ${numberSource(
-            Math.min(1, parameters.midpoint + parameters.softness),
-          )},
+          ${numberSource(end)},
           distanceFromCenter
-        ) * ${numberSource(parameters.amount)};
+        )`
+        } * ${numberSource(parameters.amount)};
         result = mix(
           source.rgb,
           ${colorSource(parameters.color)},

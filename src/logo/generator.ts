@@ -1,7 +1,7 @@
 import {
   generateColorHarmony,
   parseHexColor,
-  readableTextColor,
+  readableOnSurface,
   rgbToHex,
   type ColorHarmonyRule,
   type HexColor,
@@ -144,6 +144,13 @@ const HARMONY_RULES: readonly ColorHarmonyRule[] = [
   'monochromatic',
 ]
 
+/**
+ * The surface a generated logo is judged against: the candidate previews
+ * render on white, and a new document defaults to a transparent canvas that
+ * the editor also shows on white.
+ */
+export const LOGO_SURFACE_COLOR = '#ffffff'
+
 const normalizeId = (value: string, label: string): string => {
   const normalized = value.trim()
   if (!/^[a-z0-9][a-z0-9-]*$/u.test(normalized)) {
@@ -174,7 +181,16 @@ export function createHarmonyPalettes(baseColor: string): LogoPalette[] {
         secondary: harmony[1],
         accent: harmony[2],
         background,
-        foreground: readableTextColor(background),
+        // `foreground` colours the elements drawn straight onto the canvas
+        // (the name, the tagline, a rule). The `background` swatch is never
+        // painted behind them, so deriving this from `background` produced
+        // white-on-white text - for some base colours every one of the twelve
+        // candidates rendered its name invisibly. Pick the most on-brand
+        // colour that is actually legible on the surface instead.
+        foreground: readableOnSurface(
+          [harmony[0], harmony[3], harmony[1], harmony[2]],
+          LOGO_SURFACE_COLOR,
+        ),
       },
     }
   })

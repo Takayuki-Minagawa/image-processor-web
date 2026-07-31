@@ -1676,10 +1676,15 @@ select,
 
 .logo-generator-panel > header p,
 .logo-generator-panel [role='status'],
-.logo-candidate-empty {
+.logo-candidate-empty,
+.logo-font-attribution {
   margin: 0;
   color: var(--muted);
   font-size: 10px;
+}
+
+.logo-font-attribution a {
+  color: inherit;
 }
 
 .logo-generator-panel [role='alert'] {
