@@ -25,6 +25,10 @@ import {
   type ImageDataLike,
 } from '../logo/palette'
 import { readPaletteImageFile } from '../logo/paletteSource'
+import {
+  BUNDLED_LOGO_FONT_LICENSES,
+  ensureLogoFontsLoaded,
+} from '../logo/fonts'
 import type { LogoTemplate } from '../logo/templateSchema'
 
 export type LogoColorApplicationTarget = 'fill' | 'stroke'
@@ -425,12 +429,16 @@ export function LogoGeneratorPanel({
     }
   }
 
-  const insertSelected = (): void => {
+  const insertSelected = async (): Promise<void> => {
     if (!selected) {
       setError('挿入する候補を選択してください。')
       return
     }
     try {
+      // Fabric measures the text as soon as it is created, so the bundled
+      // fonts must be resolved first or the layout would be computed from
+      // fallback metrics and baked into the inserted layers.
+      await ensureLogoFontsLoaded()
       onInsert(selected)
       setError(null)
       setStatus(`「${selected.templateName}」を挿入しました。`)
@@ -725,9 +733,27 @@ export function LogoGeneratorPanel({
         </p>
       )}
 
-      <button type="button" disabled={!selected} onClick={insertSelected}>
+      <button
+        type="button"
+        disabled={!selected}
+        onClick={() => void insertSelected()}
+      >
         選択した候補を挿入
       </button>
+
+      <p className="logo-font-attribution">
+        同梱フォント：
+        {BUNDLED_LOGO_FONT_LICENSES.map(({ family, license, url }, index) => (
+          <span key={family}>
+            {index > 0 ? '、' : ''}
+            <a href={url} target="_blank" rel="noreferrer noopener">
+              {family}
+            </a>
+            （{license}）
+          </span>
+        ))}
+        。いずれも同梱して自己ホストしており、外部のフォント配信元へ接続しません。
+      </p>
     </section>
   )
 }

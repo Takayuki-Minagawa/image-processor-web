@@ -123,22 +123,22 @@ const applySharpen = (image: PixelBuffer, amount: number): PixelBuffer =>
     0,
   ])
 
+// The kernel already sums to 1, so flat regions keep their original value and
+// strength 0 is the identity. Adding a 128*strength bias on top of that (as an
+// earlier revision did) pushed every mid-tone past 255: a flat 128 image came
+// back pure white at the default strength.
 const applyEmboss = (image: PixelBuffer, strength: number): PixelBuffer =>
-  applyConvolution(
-    image,
-    [
-      -2 * strength,
-      -strength,
-      0,
-      -strength,
-      1,
-      strength,
-      0,
-      strength,
-      2 * strength,
-    ],
-    128 * strength,
-  )
+  applyConvolution(image, [
+    -2 * strength,
+    -strength,
+    0,
+    -strength,
+    1,
+    strength,
+    0,
+    strength,
+    2 * strength,
+  ])
 
 const applyNoise = (
   image: PixelBuffer,
@@ -169,18 +169,35 @@ const applyPixelate = (image: PixelBuffer, size: number): PixelBuffer => {
     for (let left = 0; left < image.width; left += size) {
       const right = Math.min(image.width, left + size)
       const bottom = Math.min(image.height, top + size)
-      const totals = [0, 0, 0, 0]
+      // Colour is averaged weighted by alpha. These buffers hold straight
+      // (un-premultiplied) alpha, so averaging RGB flat would let the
+      // arbitrary colour under fully transparent pixels drag the block toward
+      // black and leave a dark fringe around every transparent edge.
+      let alphaTotal = 0
+      let weightedRed = 0
+      let weightedGreen = 0
+      let weightedBlue = 0
       let count = 0
       for (let y = top; y < bottom; y += 1) {
         for (let x = left; x < right; x += 1) {
           const offset = pixelOffset(image.width, x, y)
-          for (let channel = 0; channel < 4; channel += 1) {
-            totals[channel] += image.data[offset + channel]
-          }
+          const alpha = image.data[offset + 3]
+          weightedRed += image.data[offset] * alpha
+          weightedGreen += image.data[offset + 1] * alpha
+          weightedBlue += image.data[offset + 2] * alpha
+          alphaTotal += alpha
           count += 1
         }
       }
-      const average = totals.map((total) => clampByte(total / count))
+      const average =
+        alphaTotal === 0
+          ? [0, 0, 0, 0]
+          : [
+              clampByte(weightedRed / alphaTotal),
+              clampByte(weightedGreen / alphaTotal),
+              clampByte(weightedBlue / alphaTotal),
+              clampByte(alphaTotal / count),
+            ]
       for (let y = top; y < bottom; y += 1) {
         for (let x = left; x < right; x += 1) {
           const offset = pixelOffset(image.width, x, y)

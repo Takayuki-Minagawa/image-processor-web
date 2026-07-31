@@ -205,4 +205,49 @@ describe('advanced filter WebGL lookup and shader parity', () => {
     expect(glitch).toContain('vec4 rowData = texture2D')
     expect(glitch).toContain('floor(rowData.r * 255.0 + 0.5) * 256.0')
   })
+
+  it('never emits exponential notation, which is not valid GLSL 1 syntax', () => {
+    // A tiny stop offset used to render as `1e-9.0`, which fails to compile
+    // and silently drops the whole chain back to the CPU path.
+    const source = __webGlFilterTesting.fragmentSource(
+      {
+        id: 'gradient-map',
+        params: {
+          stops: [
+            { offset: 0, color: { r: 0, g: 0, b: 0 } },
+            { offset: 1e-9, color: { r: 1, g: 2, b: 3 } },
+            { offset: 1, color: { r: 255, g: 255, b: 255 } },
+          ],
+        },
+      },
+      8,
+      6,
+    )
+
+    expect(source).not.toMatch(/\d[eE][+-]?\d/u)
+    for (const literal of source.match(/-?\d+\.\d+/gu) ?? []) {
+      expect(Number.isFinite(Number(literal))).toBe(true)
+    }
+  })
+
+  it('emits a plain step for a vignette whose smoothstep edges collapse', () => {
+    // GLSL smoothstep is undefined when both edges are equal.
+    const source = __webGlFilterTesting.fragmentSource(
+      {
+        id: 'vignette',
+        params: {
+          amount: 1,
+          midpoint: 1,
+          softness: 0.5,
+          color: { r: 0, g: 0, b: 0 },
+        },
+      },
+      8,
+      6,
+    )
+
+    expect(source).not.toMatch(/smoothstep\s*\(/u)
+    expect(source).toContain('distanceFromCenter < 1.0 ? 0.0 : 1.0')
+    expect(source).toContain('floor(vTextureCoordinate')
+  })
 })

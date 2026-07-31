@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_LOGO_FONT_PAIRS,
   DEFAULT_LOGO_PALETTES,
+  LOGO_SURFACE_COLOR,
   createHarmonyPalettes,
   deriveInitials,
   generateLogoVariations,
   locksFromVariation,
 } from './generator'
+import { MINIMUM_TEXT_CONTRAST, contrastRatio } from './colors'
 
 describe('logo generator inputs', () => {
   it('derives initials across words and Unicode names', () => {
@@ -22,7 +24,12 @@ describe('logo generator inputs', () => {
     expect(new Set(palettes.map(({ id }) => id)).size).toBe(4)
     for (const palette of palettes) {
       expect(palette.colors.primary).toBe('#ff0000')
-      expect(palette.colors.foreground).toMatch(/^#(?:000000|ffffff)$/u)
+      // The foreground keeps the palette's own character where it can - it is
+      // only forced to plain black or white when nothing else is legible.
+      expect(palette.colors.foreground).toMatch(/^#[0-9a-f]{6}$/u)
+      expect(
+        contrastRatio(palette.colors.foreground, LOGO_SURFACE_COLOR),
+      ).toBeGreaterThanOrEqual(MINIMUM_TEXT_CONTRAST)
     }
   })
 })
@@ -170,5 +177,45 @@ describe('generateLogoVariations', () => {
   it('exports usable default font and palette dimensions', () => {
     expect(DEFAULT_LOGO_FONT_PAIRS.length).toBeGreaterThanOrEqual(4)
     expect(DEFAULT_LOGO_PALETTES.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('keeps canvas-drawn text legible on the logo surface for every base color', () => {
+    // '#0a7f4b' used to drive every harmony rule to a white foreground, so all
+    // twelve candidates rendered their name white-on-white and looked empty.
+    const baseColors = [
+      '#0a7f4b',
+      '#6757e8',
+      '#ffffff',
+      '#000000',
+      '#808080',
+      '#ffe600',
+    ]
+
+    for (const baseColor of baseColors) {
+      for (const palette of createHarmonyPalettes(baseColor)) {
+        expect(
+          contrastRatio(palette.colors.foreground, LOGO_SURFACE_COLOR),
+        ).toBeGreaterThanOrEqual(MINIMUM_TEXT_CONTRAST)
+      }
+    }
+  })
+
+  it('renders every generated candidate with a visible name', () => {
+    for (const baseColor of ['#0a7f4b', '#6757e8', '#808080']) {
+      const variations = generateLogoVariations(
+        { name: 'North Star', tagline: 'Guiding light' },
+        { palettes: createHarmonyPalettes(baseColor), seed: 7 },
+      )
+
+      for (const variation of variations) {
+        const name = variation.elements.find(
+          (element) => element.kind === 'text' && element.slot === 'name',
+        )
+        if (!name || name.kind !== 'text') continue
+        expect(
+          contrastRatio(name.color, LOGO_SURFACE_COLOR),
+        ).toBeGreaterThanOrEqual(3)
+      }
+    }
   })
 })
