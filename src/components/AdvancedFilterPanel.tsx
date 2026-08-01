@@ -21,6 +21,11 @@ import {
 } from '../editor/filters/presetRepository'
 import type { FilterPreset } from '../editor/filters/presets'
 import {
+  formatStudioMessage,
+  getStudioComponentCopy,
+} from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
+import {
   cloneFilterOperation,
   type FilterId,
   type FilterOperation,
@@ -73,6 +78,7 @@ export interface AdvancedFilterPanelProps {
     operations: FilterOperation[],
   ): void | Promise<void>
   onStatus?(status: AdvancedFilterPanelStatus): void
+  locale?: AppLocale
 }
 
 interface NumberControlProps {
@@ -173,6 +179,7 @@ interface FilterSectionProps {
   enabled: boolean
   disabled?: boolean
   onEnabled(enabled: boolean): void
+  enableLabel: string
   children: ReactNode
 }
 
@@ -182,6 +189,7 @@ const FilterSection = ({
   enabled,
   disabled,
   onEnabled,
+  enableLabel,
   children,
 }: FilterSectionProps) => (
   <fieldset className="advanced-filter-section" data-filter-id={id}>
@@ -189,7 +197,7 @@ const FilterSection = ({
       <label>
         <input
           type="checkbox"
-          aria-label={`${label}を有効化`}
+          aria-label={enableLabel}
           checked={enabled}
           disabled={disabled}
           onChange={(event) => onEnabled(event.target.checked)}
@@ -279,13 +287,13 @@ const cloneOperations = (
 
 const PREVIEW_DEBOUNCE_MS = 180
 
-const imageDataUrl = (image: ImageData): string => {
+const imageDataUrl = (image: ImageData, canvasError: string): string => {
   const canvas = document.createElement('canvas')
   canvas.width = image.width
   canvas.height = image.height
   const context = canvas.getContext('2d')
   if (!context) {
-    throw new Error('プレビュー用Canvasを作成できませんでした。')
+    throw new Error(canvasError)
   }
   context.putImageData(image, 0, 0)
   return canvas.toDataURL('image/png')
@@ -307,7 +315,9 @@ export const AdvancedFilterPanel = ({
   onAddAdjustment,
   onUpdateAdjustment,
   onStatus,
+  locale = 'ja',
 }: AdvancedFilterPanelProps) => {
+  const copy = getStudioComponentCopy(locale).advancedFilter
   const [fallbackRepository] = useState(() => new LocalFilterPresetRepository())
   const activeRepository = repository ?? fallbackRepository
   const [operations, setOperations] = useState<FilterOperation[]>(() =>
@@ -357,8 +367,8 @@ export const AdvancedFilterPanel = ({
           }
           setPreviewState({
             kind: 'ready',
-            beforeUrl: imageDataUrl(before),
-            afterUrl: imageDataUrl(after),
+            beforeUrl: imageDataUrl(before, copy.previewCanvasFailed),
+            afterUrl: imageDataUrl(after, copy.previewCanvasFailed),
           })
         })
         .catch((error: unknown) => {
@@ -371,9 +381,7 @@ export const AdvancedFilterPanel = ({
           setPreviewState({
             kind: 'error',
             message:
-              error instanceof Error
-                ? error.message
-                : 'プレビューを作成できませんでした。',
+              error instanceof Error ? error.message : copy.previewFailed,
           })
         })
     }, PREVIEW_DEBOUNCE_MS)
@@ -382,7 +390,13 @@ export const AdvancedFilterPanel = ({
       window.clearTimeout(timeout)
       controller.abort()
     }
-  }, [operations, previewRetry, renderPreview])
+  }, [
+    copy.previewCanvasFailed,
+    copy.previewFailed,
+    operations,
+    previewRetry,
+    renderPreview,
+  ])
 
   const report = (next: AdvancedFilterPanelStatus): void => {
     setStatus(next)
@@ -517,7 +531,7 @@ export const AdvancedFilterPanel = ({
     if (next.length === 0) {
       report({
         kind: 'warning',
-        message: '有効なフィルターを1つ以上選択してください。',
+        message: copy.selectFilter,
       })
       return
     }
@@ -530,8 +544,10 @@ export const AdvancedFilterPanel = ({
         kind: 'error',
         message:
           error instanceof Error
-            ? `フィルターを適用できませんでした: ${error.message}`
-            : 'フィルターを適用できませんでした。',
+            ? formatStudioMessage(copy.applyFailedDetail, {
+                message: error.message,
+              })
+            : copy.applyFailed,
       })
     } finally {
       setApplying(false)
@@ -541,21 +557,24 @@ export const AdvancedFilterPanel = ({
   const applySelectedPreset = async (): Promise<void> => {
     const preset = presets.find(({ id }) => id === selectedPresetId)
     if (!preset) {
-      report({ kind: 'warning', message: 'プリセットを選択してください。' })
+      report({ kind: 'warning', message: copy.selectPreset })
       return
     }
     const next = commit(
       cloneOperations(preset.filters),
       initialCurvePoints(preset.filters),
     )
-    await runApply(next, `プリセット「${preset.name}」を適用しました。`)
+    await runApply(
+      next,
+      formatStudioMessage(copy.presetApplied, { name: preset.name }),
+    )
   }
 
   const savePreset = (event: FormEvent): void => {
     event.preventDefault()
     const name = presetName.trim()
     if (!name) {
-      report({ kind: 'warning', message: 'プリセット名を入力してください。' })
+      report({ kind: 'warning', message: copy.presetNameRequired })
       return
     }
     try {
@@ -572,16 +591,18 @@ export const AdvancedFilterPanel = ({
       report({
         kind: result.persisted ? 'success' : 'warning',
         message: result.persisted
-          ? `プリセット「${name}」を保存しました。`
-          : `プリセット「${name}」はこのセッションだけに保存されました。`,
+          ? formatStudioMessage(copy.presetSaved, { name })
+          : formatStudioMessage(copy.presetSavedSession, { name }),
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
           error instanceof Error
-            ? `プリセットを保存できませんでした: ${error.message}`
-            : 'プリセットを保存できませんでした。',
+            ? formatStudioMessage(copy.presetSaveFailedDetail, {
+                message: error.message,
+              })
+            : copy.presetSaveFailed,
       })
     }
   }
@@ -601,7 +622,9 @@ export const AdvancedFilterPanel = ({
       setSelectedPresetId(refreshed[0]?.id ?? '')
       report({
         kind: 'success',
-        message: `プリセット「${selectedPreset.name}」を削除しました。`,
+        message: formatStudioMessage(copy.presetDeleted, {
+          name: selectedPreset.name,
+        }),
       })
     }
   }
@@ -611,22 +634,22 @@ export const AdvancedFilterPanel = ({
   const controlsDisabled = disabled || applying
 
   return (
-    <section className="advanced-filter-panel" aria-label="詳細フィルター">
+    <section className="advanced-filter-panel" aria-label={copy.panelLabel}>
       <header>
         <div>
           <p className="advanced-filter-eyebrow">CPU FILTER CHAIN</p>
-          <h3>詳細フィルター</h3>
+          <h3>{copy.heading}</h3>
         </div>
-        <output aria-label="有効な詳細フィルター数">
+        <output aria-label={copy.activeFilterCountLabel}>
           {operations.length} filters
         </output>
       </header>
 
       <div className="advanced-filter-presets">
         <label>
-          <span>フィルタープリセット</span>
+          <span>{copy.presets}</span>
           <select
-            aria-label="フィルタープリセット"
+            aria-label={copy.presets}
             value={selectedPresetId}
             disabled={controlsDisabled || presets.length === 0}
             onChange={(event) => setSelectedPresetId(event.target.value)}
@@ -644,21 +667,21 @@ export const AdvancedFilterPanel = ({
             disabled={controlsDisabled || !selectedPreset}
             onClick={() => void applySelectedPreset()}
           >
-            プリセットを適用
+            {copy.applyPreset}
           </button>
           <button
             type="button"
             disabled={controlsDisabled || !selectedIsUserPreset}
             onClick={deleteSelectedPreset}
           >
-            削除
+            {copy.remove}
           </button>
         </div>
         <form onSubmit={savePreset}>
           <label>
-            <span>新しいプリセット名</span>
+            <span>{copy.newPresetName}</span>
             <input
-              aria-label="新しいプリセット名"
+              aria-label={copy.newPresetName}
               value={presetName}
               maxLength={200}
               disabled={controlsDisabled}
@@ -666,7 +689,7 @@ export const AdvancedFilterPanel = ({
             />
           </label>
           <button type="submit" disabled={controlsDisabled}>
-            現在の設定を保存
+            {copy.saveCurrent}
           </button>
         </form>
       </div>
@@ -674,43 +697,45 @@ export const AdvancedFilterPanel = ({
       {renderPreview ? (
         <section
           className="advanced-filter-preview"
-          aria-label="実画像フィルタープレビュー"
+          aria-label={copy.previewLabel}
           aria-busy={previewState.kind === 'loading'}
         >
           <header>
             <div>
-              <strong>実画像プレビュー</strong>
-              <span>有効な {operations.length} 件を適用</span>
+              <strong>{copy.previewTitle}</strong>
+              <span>
+                {formatStudioMessage(copy.previewActiveCount, {
+                  count: operations.length,
+                })}
+              </span>
             </div>
             {previewState.kind === 'loading' ? (
-              <span role="status">更新中…</span>
+              <span role="status">{copy.updating}</span>
             ) : null}
           </header>
           {previewState.kind === 'ready' ? (
             <div className="advanced-filter-preview-images">
               <figure>
-                <img
-                  src={previewState.beforeUrl}
-                  alt="フィルター適用前のプレビュー"
-                />
+                <img src={previewState.beforeUrl} alt={copy.beforeAlt} />
                 <figcaption>Before</figcaption>
               </figure>
               <figure>
-                <img
-                  src={previewState.afterUrl}
-                  alt="フィルター適用後のプレビュー"
-                />
+                <img src={previewState.afterUrl} alt={copy.afterAlt} />
                 <figcaption>After</figcaption>
               </figure>
             </div>
           ) : previewState.kind === 'error' ? (
             <div className="advanced-filter-preview-error" role="status">
-              <span>プレビューを更新できません: {previewState.message}</span>
+              <span>
+                {formatStudioMessage(copy.previewUpdateFailed, {
+                  message: previewState.message,
+                })}
+              </span>
               <button
                 type="button"
                 onClick={() => setPreviewRetry((value) => value + 1)}
               >
-                再試行
+                {copy.retry}
               </button>
             </div>
           ) : (
@@ -725,13 +750,16 @@ export const AdvancedFilterPanel = ({
       <div className="advanced-filter-grid">
         <FilterSection
           id="levels"
-          label="レベル補正"
+          label={copy.levels}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.levels,
+          })}
           enabled={enabled('levels')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('levels', value)}
         >
           <NumberControl
-            label="入力ブラック"
+            label={copy.inputBlack}
             value={levels.inputBlack}
             minimum={0}
             maximum={levels.inputWhite - 1}
@@ -743,7 +771,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="入力ホワイト"
+            label={copy.inputWhite}
             value={levels.inputWhite}
             minimum={levels.inputBlack + 1}
             maximum={255}
@@ -755,7 +783,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="ガンマ"
+            label={copy.gamma}
             value={levels.gamma}
             minimum={0.1}
             maximum={10}
@@ -763,7 +791,7 @@ export const AdvancedFilterPanel = ({
             onChange={(value) => update('levels', { ...levels, gamma: value })}
           />
           <NumberControl
-            label="出力ブラック"
+            label={copy.outputBlack}
             value={levels.outputBlack}
             minimum={0}
             maximum={levels.outputWhite - 1}
@@ -775,7 +803,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="出力ホワイト"
+            label={copy.outputWhite}
             value={levels.outputWhite}
             minimum={levels.outputBlack + 1}
             maximum={255}
@@ -790,7 +818,10 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="curves"
-          label="トーンカーブ"
+          label={copy.curves}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.curves,
+          })}
           enabled={enabled('curves')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('curves', value)}
@@ -799,7 +830,7 @@ export const AdvancedFilterPanel = ({
             className="tone-curve-preview"
             viewBox="0 0 240 120"
             role="img"
-            aria-label="トーンカーブのプレビュー"
+            aria-label={copy.curvePreview}
           >
             <path d="M 0 60 H 240 M 120 0 V 120" />
             <polyline points={curvePolyline} />
@@ -812,11 +843,13 @@ export const AdvancedFilterPanel = ({
               />
             ))}
           </svg>
-          <div className="tone-curve-points" aria-label="トーンカーブ制御点">
+          <div className="tone-curve-points" aria-label={copy.curvePoints}>
             {curvePoints.map((point, index) => (
               <div key={`point-${index}`}>
                 <NumberControl
-                  label={`ポイント ${index + 1} X`}
+                  label={formatStudioMessage(copy.pointX, {
+                    index: index + 1,
+                  })}
                   value={point.x}
                   minimum={curvePoints[index - 1]?.x + 1 || 0}
                   maximum={curvePoints[index + 1]?.x - 1 || 255}
@@ -831,7 +864,9 @@ export const AdvancedFilterPanel = ({
                   onChange={(value) => changeCurvePoint(index, 'x', value)}
                 />
                 <NumberControl
-                  label={`ポイント ${index + 1} Y`}
+                  label={formatStudioMessage(copy.pointY, {
+                    index: index + 1,
+                  })}
                   value={point.y}
                   minimum={0}
                   maximum={255}
@@ -843,7 +878,9 @@ export const AdvancedFilterPanel = ({
                 {index > 0 && index < curvePoints.length - 1 ? (
                   <button
                     type="button"
-                    aria-label={`ポイント ${index + 1} を削除`}
+                    aria-label={formatStudioMessage(copy.removePoint, {
+                      index: index + 1,
+                    })}
                     disabled={!enabled('curves') || controlsDisabled}
                     onClick={() => removeCurvePoint(index)}
                   >
@@ -860,19 +897,22 @@ export const AdvancedFilterPanel = ({
             }
             onClick={addCurvePoint}
           >
-            制御点を追加
+            {copy.addPoint}
           </button>
         </FilterSection>
 
         <FilterSection
           id="white-balance"
-          label="ホワイトバランス"
+          label={copy.whiteBalance}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.whiteBalance,
+          })}
           enabled={enabled('white-balance')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('white-balance', value)}
         >
           <NumberControl
-            label="色温度"
+            label={copy.temperature}
             value={whiteBalance.temperature}
             minimum={-1}
             maximum={1}
@@ -885,7 +925,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="色かぶり補正"
+            label={copy.tint}
             value={whiteBalance.tint}
             minimum={-1}
             maximum={1}
@@ -898,13 +938,16 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="vignette"
-          label="ビネット"
+          label={copy.vignette}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.vignette,
+          })}
           enabled={enabled('vignette')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('vignette', value)}
         >
           <NumberControl
-            label="ビネット量"
+            label={copy.vignetteAmount}
             value={vignette.amount}
             minimum={0}
             maximum={1}
@@ -914,7 +957,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="ビネット中間点"
+            label={copy.vignetteMidpoint}
             value={vignette.midpoint}
             minimum={0}
             maximum={1}
@@ -924,7 +967,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="ビネットぼかし"
+            label={copy.vignetteSoftness}
             value={vignette.softness}
             minimum={0.01}
             maximum={1}
@@ -934,7 +977,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <ColorControl
-            label="ビネット色"
+            label={copy.vignetteColor}
             value={vignette.color}
             disabled={!enabled('vignette') || controlsDisabled}
             onChange={(value) =>
@@ -945,7 +988,10 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="gradient-map"
-          label="グラデーションマップ"
+          label={copy.gradientMap}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.gradientMap,
+          })}
           enabled={enabled('gradient-map')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('gradient-map', value)}
@@ -953,7 +999,7 @@ export const AdvancedFilterPanel = ({
           <div
             className="gradient-map-preview"
             role="img"
-            aria-label="グラデーションマップのプレビュー"
+            aria-label={copy.gradientPreview}
             style={{
               background: `linear-gradient(90deg, ${rgbToHex(
                 gradientStart.color,
@@ -961,7 +1007,7 @@ export const AdvancedFilterPanel = ({
             }}
           />
           <ColorControl
-            label="グラデーション暗部色"
+            label={copy.gradientShadow}
             value={gradientStart.color}
             disabled={!enabled('gradient-map') || controlsDisabled}
             onChange={(value) =>
@@ -973,7 +1019,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <ColorControl
-            label="グラデーション明部色"
+            label={copy.gradientHighlight}
             value={gradientEnd.color}
             disabled={!enabled('gradient-map') || controlsDisabled}
             onChange={(value) =>
@@ -990,13 +1036,16 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="duotone"
-          label="デュオトーン"
+          label={copy.duotone}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.duotone,
+          })}
           enabled={enabled('duotone')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('duotone', value)}
         >
           <ColorControl
-            label="デュオトーン暗部色"
+            label={copy.duotoneShadow}
             value={duotone.shadows}
             disabled={!enabled('duotone') || controlsDisabled}
             onChange={(value) =>
@@ -1004,7 +1053,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <ColorControl
-            label="デュオトーン明部色"
+            label={copy.duotoneHighlight}
             value={duotone.highlights}
             disabled={!enabled('duotone') || controlsDisabled}
             onChange={(value) =>
@@ -1015,13 +1064,16 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="halftone"
-          label="ハーフトーン"
+          label={copy.halftone}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.halftone,
+          })}
           enabled={enabled('halftone')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('halftone', value)}
         >
           <NumberControl
-            label="ドットサイズ"
+            label={copy.dotSize}
             value={halftone.size}
             minimum={2}
             maximum={64}
@@ -1033,7 +1085,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="ハーフトーン角度"
+            label={copy.halftoneAngle}
             value={halftone.angle}
             minimum={0}
             maximum={180}
@@ -1044,7 +1096,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <ColorControl
-            label="ドット色"
+            label={copy.dotColor}
             value={halftone.foreground}
             disabled={!enabled('halftone') || controlsDisabled}
             onChange={(value) =>
@@ -1052,7 +1104,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <ColorControl
-            label="ハーフトーン背景色"
+            label={copy.halftoneBackground}
             value={halftone.background}
             disabled={!enabled('halftone') || controlsDisabled}
             onChange={(value) =>
@@ -1063,13 +1115,16 @@ export const AdvancedFilterPanel = ({
 
         <FilterSection
           id="glitch"
-          label="グリッチ"
+          label={copy.glitch}
+          enableLabel={formatStudioMessage(copy.enableFilter, {
+            label: copy.glitch,
+          })}
           enabled={enabled('glitch')}
           disabled={controlsDisabled}
           onEnabled={(value) => toggle('glitch', value)}
         >
           <NumberControl
-            label="グリッチ量"
+            label={copy.glitchAmount}
             value={glitch.amount}
             minimum={0}
             maximum={1}
@@ -1077,7 +1132,7 @@ export const AdvancedFilterPanel = ({
             onChange={(value) => update('glitch', { ...glitch, amount: value })}
           />
           <NumberControl
-            label="RGBオフセット"
+            label={copy.rgbOffset}
             value={glitch.offset}
             minimum={0}
             maximum={256}
@@ -1087,7 +1142,7 @@ export const AdvancedFilterPanel = ({
             onChange={(value) => update('glitch', { ...glitch, offset: value })}
           />
           <NumberControl
-            label="スキャンライン"
+            label={copy.scanlines}
             value={glitch.scanlines}
             minimum={0}
             maximum={1}
@@ -1097,7 +1152,7 @@ export const AdvancedFilterPanel = ({
             }
           />
           <NumberControl
-            label="グリッチ乱数シード"
+            label={copy.glitchSeed}
             value={glitch.seed}
             minimum={0}
             maximum={0xffffffff}
@@ -1112,13 +1167,11 @@ export const AdvancedFilterPanel = ({
       <button
         className="advanced-filter-apply"
         type="button"
-        aria-label="詳細フィルターを適用"
+        aria-label={copy.applyLabel}
         disabled={controlsDisabled || operations.length === 0}
-        onClick={() =>
-          void runApply(operations, '詳細フィルターを適用しました。')
-        }
+        onClick={() => void runApply(operations, copy.applied)}
       >
-        {applying ? '適用中…' : 'ラスターレイヤーへ適用'}
+        {applying ? copy.applying : copy.applyRaster}
       </button>
 
       {editingAdjustmentId && onUpdateAdjustment ? (
@@ -1127,14 +1180,12 @@ export const AdvancedFilterPanel = ({
           type="button"
           disabled={controlsDisabled || operations.length === 0}
           onClick={() =>
-            void runApply(
-              operations,
-              '詳細調整レイヤーを更新しました。',
-              (next) => onUpdateAdjustment(editingAdjustmentId, next),
+            void runApply(operations, copy.adjustmentUpdated, (next) =>
+              onUpdateAdjustment(editingAdjustmentId, next),
             )
           }
         >
-          {applying ? '更新中…' : '選択中の調整レイヤーを更新'}
+          {applying ? copy.updating : copy.updateAdjustment}
         </button>
       ) : onAddAdjustment ? (
         <button
@@ -1142,14 +1193,10 @@ export const AdvancedFilterPanel = ({
           type="button"
           disabled={controlsDisabled || operations.length === 0}
           onClick={() =>
-            void runApply(
-              operations,
-              '詳細調整レイヤーを追加しました。',
-              onAddAdjustment,
-            )
+            void runApply(operations, copy.adjustmentAdded, onAddAdjustment)
           }
         >
-          {applying ? '追加中…' : '調整レイヤーとして追加'}
+          {applying ? copy.adding : copy.addAdjustment}
         </button>
       ) : null}
 

@@ -60,6 +60,18 @@ describe('History', () => {
     expect(history.redo()).toBeUndefined()
   })
 
+  it('replaces navigation state without adding an undo step or dropping redo', () => {
+    const history = new History<{ page: string; value: number }>()
+    history.push({ page: 'one', value: 0 })
+    history.push({ page: 'one', value: 1 })
+    history.undo()
+
+    expect(history.replaceCurrent({ page: 'two', value: 0 })).toBe(true)
+    expect(history.size).toBe(2)
+    expect(history.current()).toEqual({ page: 'two', value: 0 })
+    expect(history.redo()).toEqual({ page: 'one', value: 1 })
+  })
+
   it('retains at most 100 snapshots by default', () => {
     const history = new History<number>()
     for (let value = 0; value < 105; value += 1) {

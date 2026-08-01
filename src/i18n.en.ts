@@ -81,6 +81,7 @@ export const ENGLISH_EDITOR_UI_COPY: EditorUiCopy = {
   studioDescription:
     'Create logos, automate work, and use selection, background-removal, and scripting tools locally.',
   studioTabs: {
+    design: 'Design',
     logo: 'Logo',
     automation: 'Automation & batch',
     advanced: 'Selection, background & scripts',

@@ -34,6 +34,21 @@ const generateNamedLogo = async (name = 'Pixelweave Studio') => {
 }
 
 describe('LogoGeneratorPanel', () => {
+  it('renders its namespaced English catalog when locale is en', () => {
+    renderPanel({ locale: 'en' })
+
+    expect(
+      screen.getByRole('heading', { name: 'Logo template generator' }),
+    ).toBeVisible()
+    expect(screen.getByLabelText('Name')).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Generate candidates' }),
+    ).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Enter a name to generate logo candidates.',
+    )
+  })
+
   it('accepts logo inputs and exposes at least twelve accessible preview cards', async () => {
     const { onInsert } = renderPanel({ candidateCount: 8 })
     const user = userEvent.setup()

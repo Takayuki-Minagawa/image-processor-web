@@ -28,6 +28,12 @@ import {
   type PipelineImageMimeType,
   type PipelineOutputOptions,
 } from '../batch'
+import {
+  formatStudioMessage,
+  getStudioComponentCopy,
+  type StudioComponentCopy,
+} from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
 
 type Awaitable<T> = T | Promise<T>
 
@@ -79,6 +85,7 @@ export interface AutomationBatchPanelProps {
   documentLabel?: string
   initialTab?: AutomationBatchTab
   className?: string
+  locale?: AppLocale
   onStartMacroRecording(name: string): Awaitable<void>
   onStopMacroRecording(): Awaitable<void>
   onReplayMacro(request: MacroReplayRequest): Awaitable<void>
@@ -111,44 +118,20 @@ type WindowWithInputDirectoryPicker = Window & {
 
 const TAB_ORDER: readonly AutomationBatchTab[] = ['macros', 'batch', 'icons']
 
-const TAB_LABELS: Record<AutomationBatchTab, string> = {
-  macros: 'マクロ',
-  batch: 'バッチ変換',
-  icons: 'アイコン書き出し',
-}
-
-const FIT_LABELS = {
-  contain: '全体を収める',
-  cover: '領域を覆う',
-  stretch: '引き伸ばす',
-} as const
-
-const OUTPUT_MODE_LABELS: ReadonlyArray<{
-  value: AutomationBatchOutputMode
-  label: string
-}> = [
-  { value: 'auto', label: '自動（非対応時はZIP）' },
-  { value: 'directory', label: 'フォルダーへ直接保存' },
-  { value: 'zip', label: 'ZIPでダウンロード' },
-]
-
-const WATERMARK_POSITIONS = [
-  ['topLeft', '左上'],
-  ['topRight', '右上'],
-  ['bottomLeft', '左下'],
-  ['bottomRight', '右下'],
-  ['center', '中央'],
-] as const
-
 type ParameterInputValue = string | boolean
+type AutomationCopy = StudioComponentCopy['automation']
 
 const errorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback
 
-const parsePositiveInteger = (source: string, label: string): number => {
+const parsePositiveInteger = (
+  source: string,
+  label: string,
+  copy: AutomationCopy,
+): number => {
   const value = Number(source)
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label}は1以上の整数で指定してください。`)
+    throw new RangeError(formatStudioMessage(copy.positiveInteger, { label }))
   }
   return value
 }
@@ -180,6 +163,7 @@ const safeBatchItemId = (fileName: string, index: number): string => {
 
 const collectDirectoryImages = async (
   directory: InputDirectoryHandle,
+  copy: AutomationCopy,
 ): Promise<{ files: File[]; skipped: number; truncated: boolean }> => {
   const files: File[] = []
   let skipped = 0
@@ -190,7 +174,7 @@ const collectDirectoryImages = async (
     depth: number,
   ): Promise<void> => {
     if (depth > 16) {
-      throw new RangeError('入力フォルダーは16階層以内にしてください。')
+      throw new RangeError(copy.directoryDepth)
     }
     for await (const entry of current.values()) {
       visited += 1
@@ -252,6 +236,7 @@ const parameterValue = (
 const scalarFromParameterInput = (
   definition: MacroParameterDefinition,
   input: ParameterInputValue,
+  copy: AutomationCopy,
 ): AutomationScalar | undefined => {
   if (definition.type === 'boolean') {
     return Boolean(input)
@@ -267,12 +252,20 @@ const scalarFromParameterInput = (
   if (definition.type === 'number') {
     const value = Number(source)
     if (!Number.isFinite(value)) {
-      throw new TypeError(`「${definition.label}」には数値を入力してください。`)
+      throw new TypeError(
+        formatStudioMessage(copy.parameterNumber, {
+          label: definition.label,
+        }),
+      )
     }
     return value
   }
   if (definition.required && source === '') {
-    throw new TypeError(`「${definition.label}」は必須です。`)
+    throw new TypeError(
+      formatStudioMessage(copy.parameterRequired, {
+        label: definition.label,
+      }),
+    )
   }
   return source
 }
@@ -280,12 +273,14 @@ const scalarFromParameterInput = (
 const parameterOverrides = (
   macro: MacroDocument,
   values: Readonly<Record<string, ParameterInputValue>>,
+  copy: AutomationCopy,
 ): Readonly<Record<string, AutomationScalar>> =>
   Object.fromEntries(
     macro.parameters.flatMap((definition) => {
       const value = scalarFromParameterInput(
         definition,
         parameterValue(definition, values),
+        copy,
       )
       return value === undefined ? [] : [[definition.name, value]]
     }),
@@ -312,11 +307,8 @@ const uniquePresetId = (
   return candidate
 }
 
-const formatFailure = (failure: BatchFailure): string =>
-  `${failure.sourceName}: ${errorMessage(
-    failure.error,
-    '処理に失敗しました。',
-  )}`
+const formatFailure = (failure: BatchFailure, copy: AutomationCopy): string =>
+  `${failure.sourceName}: ${errorMessage(failure.error, copy.processingFailed)}`
 
 const progressValue = (progress: BatchProgress): number =>
   Math.min(progress.total, progress.completed + progress.failed)
@@ -325,10 +317,12 @@ function ParameterControl({
   definition,
   value,
   onChange,
+  copy,
 }: {
   definition: MacroParameterDefinition
   value: ParameterInputValue
   onChange(value: ParameterInputValue): void
+  copy: AutomationCopy
 }) {
   if (definition.type === 'boolean') {
     return (
@@ -348,7 +342,7 @@ function ParameterControl({
       <label>
         <span>
           {definition.label}
-          {definition.required ? '（必須）' : ''}
+          {definition.required ? copy.requiredSuffix : ''}
         </span>
         <select
           value={String(value)}
@@ -356,7 +350,7 @@ function ParameterControl({
           onChange={(event) => onChange(event.target.value)}
         >
           {!definition.required && definition.default === undefined ? (
-            <option value="">既定値を使用</option>
+            <option value="">{copy.useDefault}</option>
           ) : null}
           {definition.choices.map((choice) => (
             <option
@@ -375,7 +369,7 @@ function ParameterControl({
     <label>
       <span>
         {definition.label}
-        {definition.required ? '（必須）' : ''}
+        {definition.required ? copy.requiredSuffix : ''}
       </span>
       <input
         type={definition.type === 'number' ? 'number' : 'text'}
@@ -399,9 +393,10 @@ export function AutomationBatchPanel({
   batchProgress,
   batchFailures = [],
   userIconPresets = [],
-  documentLabel = '現在のドキュメント',
+  documentLabel,
   initialTab = 'macros',
   className,
+  locale = 'ja',
   onStartMacroRecording,
   onStopMacroRecording,
   onReplayMacro,
@@ -413,6 +408,33 @@ export function AutomationBatchPanel({
   onExportIcons,
   onStatus,
 }: AutomationBatchPanelProps) {
+  const copy = getStudioComponentCopy(locale).automation
+  const resolvedDocumentLabel = documentLabel ?? copy.currentDocument
+  const tabLabels: Record<AutomationBatchTab, string> = {
+    macros: copy.tabMacros,
+    batch: copy.tabBatch,
+    icons: copy.tabIcons,
+  }
+  const fitLabels = {
+    contain: copy.fitContain,
+    cover: copy.fitCover,
+    stretch: copy.fitStretch,
+  } as const
+  const outputModeLabels: ReadonlyArray<{
+    value: AutomationBatchOutputMode
+    label: string
+  }> = [
+    { value: 'auto', label: copy.outputAuto },
+    { value: 'directory', label: copy.outputDirectory },
+    { value: 'zip', label: copy.outputZip },
+  ]
+  const watermarkPositions = [
+    ['topLeft', copy.positionTopLeft],
+    ['topRight', copy.positionTopRight],
+    ['bottomLeft', copy.positionBottomLeft],
+    ['bottomRight', copy.positionBottomRight],
+    ['center', copy.positionCenter],
+  ] as const
   const id = useId()
   const tabRefs = useRef<
     Partial<Record<AutomationBatchTab, HTMLButtonElement>>
@@ -420,13 +442,13 @@ export function AutomationBatchPanel({
   const [activeTab, setActiveTab] = useState<AutomationBatchTab>(initialTab)
   const [status, setStatus] = useState<AutomationBatchPanelStatus>({
     kind: 'info',
-    message: '自動化と一括書き出しの準備ができました。',
+    message: copy.ready,
   })
   const [error, setError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [cancellingBatch, setCancellingBatch] = useState(false)
 
-  const [recordingName, setRecordingName] = useState('新しいマクロ')
+  const [recordingName, setRecordingName] = useState(copy.newMacro)
   const [selectedMacroId, setSelectedMacroId] = useState(
     savedMacros[0]?.macro.id ?? '',
   )
@@ -502,7 +524,7 @@ export function AutomationBatchPanel({
       await operation()
       report({ kind: 'success', message: successMessage })
     } catch (actionError) {
-      const message = errorMessage(actionError, '操作を完了できませんでした。')
+      const message = errorMessage(actionError, copy.actionFailed)
       setError(message)
       report({ kind: 'error', message })
     } finally {
@@ -544,11 +566,11 @@ export function AutomationBatchPanel({
       () => {
         const name = recordingName.trim()
         if (!name) {
-          throw new TypeError('マクロ名を入力してください。')
+          throw new TypeError(copy.macroNameRequired)
         }
         return onStartMacroRecording(name)
       },
-      'マクロ記録を開始しました。',
+      copy.recordingStarted,
     )
   }
 
@@ -556,7 +578,9 @@ export function AutomationBatchPanel({
     void runAction(
       'stop-recording',
       onStopMacroRecording,
-      `${recordedCommandCount}件のコマンドをマクロとして保存しました。`,
+      formatStudioMessage(copy.recordingStopped, {
+        count: recordedCommandCount,
+      }),
     )
   }
 
@@ -565,14 +589,16 @@ export function AutomationBatchPanel({
       'replay-macro',
       () => {
         if (!selectedMacro) {
-          throw new TypeError('再生するマクロを選択してください。')
+          throw new TypeError(copy.replaySelectionRequired)
         }
         return onReplayMacro({
           macro: selectedMacro,
-          parameters: parameterOverrides(selectedMacro, parameterValues),
+          parameters: parameterOverrides(selectedMacro, parameterValues, copy),
         })
       },
-      `マクロ「${selectedMacro?.name ?? ''}」を再生しました。`,
+      formatStudioMessage(copy.replayedMacro, {
+        name: selectedMacro?.name ?? '',
+      }),
     )
   }
 
@@ -586,11 +612,13 @@ export function AutomationBatchPanel({
         if (parsed.diagnostics.length > 0) {
           report({
             kind: 'warning',
-            message: `${parsed.diagnostics.length}件の警告を含むマクロを読み込みました。`,
+            message: formatStudioMessage(copy.importedWithWarnings, {
+              count: parsed.diagnostics.length,
+            }),
           })
         }
       },
-      'マクロJSONを読み込みました。',
+      copy.importedMacro,
     )
   }
 
@@ -599,7 +627,7 @@ export function AutomationBatchPanel({
       'export-macro',
       () => {
         if (!selectedMacro) {
-          throw new TypeError('書き出すマクロを選択してください。')
+          throw new TypeError(copy.exportSelectionRequired)
         }
         return onExportMacro({
           macro: selectedMacro,
@@ -607,7 +635,7 @@ export function AutomationBatchPanel({
           source: serializeMacro(selectedMacro),
         })
       },
-      'マクロJSONを書き出しました。',
+      copy.exportedMacro,
     )
   }
 
@@ -617,18 +645,20 @@ export function AutomationBatchPanel({
       'start-batch',
       () => {
         if (batchFiles.length === 0) {
-          throw new TypeError('変換する画像を1件以上選択してください。')
+          throw new TypeError(copy.batchFilesRequired)
         }
         if (batchFiles.length > MAX_BATCH_ITEMS) {
           throw new RangeError(
-            `一度に選択できる画像は${MAX_BATCH_ITEMS}件までです。`,
+            formatStudioMessage(copy.tooManyFiles, {
+              max: MAX_BATCH_ITEMS,
+            }),
           )
         }
         const items: BatchItem[] = batchFiles.map((file, index) => {
           const type = pipelineMimeType(file)
           if (!type) {
             throw new TypeError(
-              `「${file.name}」はPNG、JPEG、WebPのいずれでもありません。`,
+              formatStudioMessage(copy.unsupportedImage, { name: file.name }),
             )
           }
           return {
@@ -644,16 +674,16 @@ export function AutomationBatchPanel({
         let commands: ResolvedAutomationCommand[]
         if (batchRecipe === 'macro') {
           if (!selectedBatchMacro) {
-            throw new TypeError('バッチへ適用するマクロを選択してください。')
+            throw new TypeError(copy.batchMacroRequired)
           }
           commands = resolveMacroParameters(
             selectedBatchMacro,
-            parameterOverrides(selectedBatchMacro, batchParameterValues),
+            parameterOverrides(selectedBatchMacro, batchParameterValues, copy),
           )
           assertBatchSafeCommands(commands)
         } else {
-          const width = parsePositiveInteger(batchWidth, '幅')
-          const height = parsePositiveInteger(batchHeight, '高さ')
+          const width = parsePositiveInteger(batchWidth, copy.width, copy)
+          const height = parsePositiveInteger(batchHeight, copy.height, copy)
           commands = [
             {
               type: 'resizeImage',
@@ -670,9 +700,7 @@ export function AutomationBatchPanel({
               opacityPercent < 0 ||
               opacityPercent > 100
             ) {
-              throw new RangeError(
-                '透かしの不透明度は0〜100で指定してください。',
-              )
+              throw new RangeError(copy.watermarkOpacityRange)
             }
             commands.push({
               type: 'addWatermark',
@@ -690,7 +718,7 @@ export function AutomationBatchPanel({
             qualityPercent <= 0 ||
             qualityPercent > 100)
         ) {
-          throw new RangeError('品質は1〜100で指定してください。')
+          throw new RangeError(copy.qualityRange)
         }
         const output: PipelineOutputOptions = {
           mimeType: batchFormat,
@@ -705,7 +733,7 @@ export function AutomationBatchPanel({
           outputMode: batchOutputMode,
         })
       },
-      'バッチ変換を開始しました。',
+      copy.batchStarted,
     )
   }
 
@@ -718,10 +746,18 @@ export function AutomationBatchPanel({
       kind: images.length > MAX_BATCH_ITEMS || skipped > 0 ? 'warning' : 'info',
       message:
         images.length > MAX_BATCH_ITEMS
-          ? `フォルダー内に${images.length}件の画像があります。一度に処理できる${MAX_BATCH_ITEMS}件以下へ絞ってください。`
+          ? formatStudioMessage(copy.folderTooMany, {
+              count: images.length,
+              max: MAX_BATCH_ITEMS,
+            })
           : skipped > 0
-            ? `${images.length}件の画像を選択し、対象外の${skipped}件を除外しました。`
-            : `${images.length}件の画像をフォルダーから選択しました。`,
+            ? formatStudioMessage(copy.selectedAndSkipped, {
+                count: images.length,
+                skipped,
+              })
+            : formatStudioMessage(copy.selectedFromFolder, {
+                count: images.length,
+              }),
     })
   }
 
@@ -733,7 +769,7 @@ export function AutomationBatchPanel({
     setError(null)
     try {
       const directory = await picker.call(window, { mode: 'read' })
-      const selected = await collectDirectoryImages(directory)
+      const selected = await collectDirectoryImages(directory, copy)
       setBatchFiles(selected.files)
       report({
         kind:
@@ -743,12 +779,20 @@ export function AutomationBatchPanel({
             ? 'warning'
             : 'success',
         message: selected.truncated
-          ? `フォルダー内に${selected.files.length}件以上の画像があります。一度に処理できる${MAX_BATCH_ITEMS}件以下へ絞ってください。`
+          ? formatStudioMessage(copy.folderAtLeastTooMany, {
+              count: selected.files.length,
+              max: MAX_BATCH_ITEMS,
+            })
           : selected.files.length === 0
-            ? 'フォルダーに対応画像がありません。'
+            ? copy.noSupportedImages
             : selected.skipped > 0
-              ? `${selected.files.length}件の画像を選択し、対象外の${selected.skipped}件を除外しました。`
-              : `${selected.files.length}件の画像をフォルダーから選択しました。`,
+              ? formatStudioMessage(copy.selectedAndSkipped, {
+                  count: selected.files.length,
+                  skipped: selected.skipped,
+                })
+              : formatStudioMessage(copy.selectedFromFolder, {
+                  count: selected.files.length,
+                }),
       })
     } catch (directoryError) {
       if (
@@ -757,13 +801,10 @@ export function AutomationBatchPanel({
       ) {
         report({
           kind: 'info',
-          message: '入力フォルダーの選択をキャンセルしました。',
+          message: copy.folderSelectionCancelled,
         })
       } else {
-        const message = errorMessage(
-          directoryError,
-          '入力フォルダーを読み込めませんでした。',
-        )
+        const message = errorMessage(directoryError, copy.folderReadFailed)
         setError(message)
         report({ kind: 'error', message })
       }
@@ -779,14 +820,11 @@ export function AutomationBatchPanel({
       .then(() => {
         report({
           kind: 'warning',
-          message: 'バッチ変換のキャンセルを要求しました。',
+          message: copy.cancelRequested,
         })
       })
       .catch((cancelError: unknown) => {
-        const message = errorMessage(
-          cancelError,
-          'バッチ変換をキャンセルできませんでした。',
-        )
+        const message = errorMessage(cancelError, copy.cancelFailed)
         setError(message)
         report({ kind: 'error', message })
       })
@@ -810,13 +848,13 @@ export function AutomationBatchPanel({
       async () => {
         const label = presetLabel.trim()
         if (!label) {
-          throw new TypeError('プリセット名を入力してください。')
+          throw new TypeError(copy.presetNameRequired)
         }
         const preset = validateIconPreset({
           id: uniquePresetId(label, allPresets),
           label,
-          width: parsePositiveInteger(presetWidth, '幅'),
-          height: parsePositiveInteger(presetHeight, '高さ'),
+          width: parsePositiveInteger(presetWidth, copy.width, copy),
+          height: parsePositiveInteger(presetHeight, copy.height, copy),
           fileName: presetFileName.trim(),
           fit: presetFit,
           background: presetBackground.trim(),
@@ -828,14 +866,16 @@ export function AutomationBatchPanel({
           )
         ) {
           throw new TypeError(
-            `ファイル名「${preset.fileName}」は既に使用されています。`,
+            formatStudioMessage(copy.duplicateFileName, {
+              name: preset.fileName,
+            }),
           )
         }
         await onChangeUserIconPresets([...userIconPresets, preset])
         setSelectedPresetIds((current) => [...current, preset.id])
         setPresetLabel('')
       },
-      'ユーザー定義プリセットを追加しました。',
+      copy.presetAdded,
     )
   }
 
@@ -850,7 +890,7 @@ export function AutomationBatchPanel({
           current.filter((presetId) => presetId !== preset.id),
         )
       },
-      `プリセット「${preset.label}」を削除しました。`,
+      formatStudioMessage(copy.presetRemoved, { name: preset.label }),
     )
   }
 
@@ -862,13 +902,11 @@ export function AutomationBatchPanel({
           selectedPresetIds.includes(presetId),
         )
         if (presets.length === 0) {
-          throw new TypeError(
-            '書き出すアイコンプリセットを1件以上選択してください。',
-          )
+          throw new TypeError(copy.exportPresetRequired)
         }
         return onExportIcons({ presets, outputMode: iconOutputMode })
       },
-      'アイコンの一括書き出しを開始しました。',
+      copy.iconExportStarted,
     )
   }
 
@@ -882,10 +920,10 @@ export function AutomationBatchPanel({
     >
       <header>
         <p>LOCAL AUTOMATION</p>
-        <h2 id={`${id}-title`}>自動化と一括書き出し</h2>
+        <h2 id={`${id}-title`}>{copy.heading}</h2>
       </header>
 
-      <div role="tablist" aria-label="自動化ツールのカテゴリ">
+      <div role="tablist" aria-label={copy.tabList}>
         {TAB_ORDER.map((tab) => (
           <button
             key={tab}
@@ -901,7 +939,7 @@ export function AutomationBatchPanel({
             onClick={() => setActiveTab(tab)}
             onKeyDown={(event) => handleTabKey(event, tab)}
           >
-            {TAB_LABELS[tab]}
+            {tabLabels[tab]}
           </button>
         ))}
       </div>
@@ -912,16 +950,14 @@ export function AutomationBatchPanel({
           role="tabpanel"
           aria-labelledby={`${id}-macros-tab`}
         >
-          <h3>マクロ記録と再生</h3>
-          <p>
-            編集操作をコマンド列として保存し、現在のドキュメントへ1つのUndo単位で再生します。
-          </p>
+          <h3>{copy.macroHeading}</h3>
+          <p>{copy.macroDescription}</p>
 
           <form onSubmit={startRecording}>
             <fieldset disabled={disableActions || isRecording}>
-              <legend>記録</legend>
+              <legend>{copy.recording}</legend>
               <label>
-                <span>マクロ名</span>
+                <span>{copy.macroName}</span>
                 <input
                   type="text"
                   value={recordingName}
@@ -930,28 +966,30 @@ export function AutomationBatchPanel({
                   onChange={(event) => setRecordingName(event.target.value)}
                 />
               </label>
-              <button type="submit">記録を開始</button>
+              <button type="submit">{copy.startRecording}</button>
             </fieldset>
           </form>
           {isRecording ? (
-            <div role="group" aria-label="記録中のマクロ">
+            <div role="group" aria-label={copy.recordingGroup}>
               <p aria-live="polite">
-                記録中: {recordedCommandCount}件のコマンド
+                {formatStudioMessage(copy.recordingProgress, {
+                  count: recordedCommandCount,
+                })}
               </p>
               <button
                 type="button"
                 disabled={disableActions}
                 onClick={stopRecording}
               >
-                記録を停止して保存
+                {copy.stopRecording}
               </button>
             </div>
           ) : null}
 
           <fieldset disabled={disableActions || savedMacros.length === 0}>
-            <legend>保存済みマクロ</legend>
+            <legend>{copy.savedMacros}</legend>
             <label>
-              <span>マクロを選択</span>
+              <span>{copy.selectMacro}</span>
               <select
                 value={selectedMacro?.id ?? ''}
                 onChange={(event) => {
@@ -960,7 +998,7 @@ export function AutomationBatchPanel({
                 }}
               >
                 {savedMacros.length === 0 ? (
-                  <option value="">保存済みマクロはありません</option>
+                  <option value="">{copy.noSavedMacros}</option>
                 ) : null}
                 {savedMacros.map(({ macro }) => (
                   <option key={macro.id} value={macro.id}>
@@ -971,7 +1009,7 @@ export function AutomationBatchPanel({
             </label>
 
             {selectedEntry && selectedEntry.diagnostics.length > 0 ? (
-              <ul aria-label="選択中のマクロの警告">
+              <ul aria-label={copy.macroWarnings}>
                 {selectedEntry.diagnostics.map((diagnostic, index) => (
                   <li key={`${diagnostic.code}-${index}`}>
                     {diagnostic.message}
@@ -982,12 +1020,13 @@ export function AutomationBatchPanel({
 
             {selectedMacro && selectedMacro.parameters.length > 0 ? (
               <fieldset>
-                <legend>再生時のパラメーター</legend>
+                <legend>{copy.replayParameters}</legend>
                 {selectedMacro.parameters.map((definition) => (
                   <ParameterControl
                     key={definition.name}
                     definition={definition}
                     value={parameterValue(definition, parameterValues)}
+                    copy={copy}
                     onChange={(value) =>
                       setParameterValues((current) => ({
                         ...current,
@@ -998,21 +1037,21 @@ export function AutomationBatchPanel({
                 ))}
               </fieldset>
             ) : (
-              <p>このマクロに上書き可能なパラメーターはありません。</p>
+              <p>{copy.noReplayParameters}</p>
             )}
 
-            <div role="group" aria-label="保存済みマクロの操作">
+            <div role="group" aria-label={copy.savedMacroActions}>
               <button type="button" onClick={replaySelectedMacro}>
-                現在のドキュメントへ再生
+                {copy.replayCurrent}
               </button>
               <button type="button" onClick={exportSelectedMacro}>
-                JSONを書き出し
+                {copy.exportJson}
               </button>
             </div>
           </fieldset>
 
           <label>
-            <span>マクロJSONを読み込み</span>
+            <span>{copy.importJson}</span>
             <input
               type="file"
               accept=".pwxmacro.json,.json,application/json"
@@ -1033,16 +1072,18 @@ export function AutomationBatchPanel({
           role="tabpanel"
           aria-labelledby={`${id}-batch-tab`}
         >
-          <h3>複数画像の定型変換</h3>
-          <p>
-            PNG・JPEG・WebPをWorker向けコマンドへ変換します。ポインター依存操作はバッチ対象外です。
-          </p>
+          <h3>{copy.batchHeading}</h3>
+          <p>{copy.batchDescription}</p>
 
           <form onSubmit={startBatch}>
             <fieldset disabled={disableActions || batchRunning}>
-              <legend>入力画像</legend>
+              <legend>{copy.inputImages}</legend>
               <label>
-                <span>画像ファイル（最大{MAX_BATCH_ITEMS}件）</span>
+                <span>
+                  {formatStudioMessage(copy.imageFiles, {
+                    max: MAX_BATCH_ITEMS,
+                  })}
+                </span>
                 <input
                   type="file"
                   accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
@@ -1053,7 +1094,7 @@ export function AutomationBatchPanel({
                 />
               </label>
               <label>
-                <span>入力フォルダー（対応ブラウザー）</span>
+                <span>{copy.inputFolder}</span>
                 <input
                   type="file"
                   accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
@@ -1077,43 +1118,51 @@ export function AutomationBatchPanel({
                 }
                 onClick={() => void pickBatchDirectory()}
               >
-                File System Access APIでフォルダーを選択
+                {copy.pickFolder}
               </button>
-              <p>{batchFiles.length}件を選択中</p>
+              <p>
+                {formatStudioMessage(copy.selectedCount, {
+                  count: batchFiles.length,
+                })}
+              </p>
               {batchFiles.length > 0 ? (
-                <ul aria-label="選択したバッチ画像">
+                <ul aria-label={copy.selectedBatchImages}>
                   {batchFiles.slice(0, 20).map((file, index) => (
                     <li key={`${file.name}-${file.size}-${index}`}>
                       {file.name}
                     </li>
                   ))}
                   {batchFiles.length > 20 ? (
-                    <li>ほか{batchFiles.length - 20}件</li>
+                    <li>
+                      {formatStudioMessage(copy.remainingCount, {
+                        count: batchFiles.length - 20,
+                      })}
+                    </li>
                   ) : null}
                 </ul>
               ) : null}
             </fieldset>
 
             <fieldset disabled={disableActions || batchRunning}>
-              <legend>処理レシピ</legend>
+              <legend>{copy.recipe}</legend>
               <label>
-                <span>適用する処理</span>
+                <span>{copy.appliedProcess}</span>
                 <select
                   value={batchRecipe}
                   onChange={(event) =>
                     setBatchRecipe(event.target.value as 'fixed' | 'macro')
                   }
                 >
-                  <option value="fixed">定型（リサイズ・透かし）</option>
+                  <option value="fixed">{copy.fixedRecipe}</option>
                   <option value="macro" disabled={savedMacros.length === 0}>
-                    保存済みマクロ
+                    {copy.savedMacros}
                   </option>
                 </select>
               </label>
               {batchRecipe === 'macro' ? (
                 <>
                   <label>
-                    <span>バッチ用マクロ</span>
+                    <span>{copy.batchMacro}</span>
                     <select
                       value={selectedBatchMacro?.id ?? ''}
                       onChange={(event) => {
@@ -1133,6 +1182,7 @@ export function AutomationBatchPanel({
                       key={`batch-${definition.name}`}
                       definition={definition}
                       value={parameterValue(definition, batchParameterValues)}
+                      copy={copy}
                       onChange={(value) =>
                         setBatchParameterValues((current) => ({
                           ...current,
@@ -1141,21 +1191,21 @@ export function AutomationBatchPanel({
                       }
                     />
                   ))}
-                  <p>
-                    リサイズ・フィルター・透かしなど、バッチ対応コマンドだけを実行します。
-                  </p>
+                  <p>{copy.batchMacroHint}</p>
                 </>
               ) : null}
             </fieldset>
 
             <fieldset disabled={disableActions || batchRunning}>
               <legend>
-                {batchRecipe === 'fixed' ? 'リサイズと形式' : '出力形式'}
+                {batchRecipe === 'fixed'
+                  ? copy.resizeAndFormat
+                  : copy.outputFormat}
               </legend>
               {batchRecipe === 'fixed' ? (
                 <>
                   <label>
-                    <span>幅（px）</span>
+                    <span>{copy.widthPx}</span>
                     <input
                       type="number"
                       min="1"
@@ -1166,7 +1216,7 @@ export function AutomationBatchPanel({
                     />
                   </label>
                   <label>
-                    <span>高さ（px）</span>
+                    <span>{copy.heightPx}</span>
                     <input
                       type="number"
                       min="1"
@@ -1177,7 +1227,7 @@ export function AutomationBatchPanel({
                     />
                   </label>
                   <label>
-                    <span>フィット方法</span>
+                    <span>{copy.fitMethod}</span>
                     <select
                       value={batchFit}
                       onChange={(event) =>
@@ -1186,7 +1236,7 @@ export function AutomationBatchPanel({
                         )
                       }
                     >
-                      {Object.entries(FIT_LABELS).map(([value, label]) => (
+                      {Object.entries(fitLabels).map(([value, label]) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
@@ -1196,7 +1246,7 @@ export function AutomationBatchPanel({
                 </>
               ) : null}
               <label>
-                <span>出力形式</span>
+                <span>{copy.outputFormat}</span>
                 <select
                   value={batchFormat}
                   onChange={(event) =>
@@ -1209,7 +1259,7 @@ export function AutomationBatchPanel({
                 </select>
               </label>
               <label>
-                <span>品質（%）</span>
+                <span>{copy.qualityPercent}</span>
                 <input
                   type="number"
                   min="1"
@@ -1224,19 +1274,19 @@ export function AutomationBatchPanel({
 
             {batchRecipe === 'fixed' ? (
               <fieldset disabled={disableActions || batchRunning}>
-                <legend>テキスト透かし（任意）</legend>
+                <legend>{copy.watermarkOptional}</legend>
                 <label>
-                  <span>透かし文字</span>
+                  <span>{copy.watermarkText}</span>
                   <input
                     type="text"
                     value={watermarkText}
                     maxLength={4096}
-                    placeholder="空欄なら追加しません"
+                    placeholder={copy.watermarkPlaceholder}
                     onChange={(event) => setWatermarkText(event.target.value)}
                   />
                 </label>
                 <label>
-                  <span>透かし位置</span>
+                  <span>{copy.watermarkPosition}</span>
                   <select
                     value={watermarkPosition}
                     disabled={!watermarkText}
@@ -1248,7 +1298,7 @@ export function AutomationBatchPanel({
                       )
                     }
                   >
-                    {WATERMARK_POSITIONS.map(([value, label]) => (
+                    {watermarkPositions.map(([value, label]) => (
                       <option key={value} value={value}>
                         {label}
                       </option>
@@ -1256,7 +1306,7 @@ export function AutomationBatchPanel({
                   </select>
                 </label>
                 <label>
-                  <span>透かし色</span>
+                  <span>{copy.watermarkColor}</span>
                   <input
                     type="text"
                     value={watermarkColor}
@@ -1265,7 +1315,7 @@ export function AutomationBatchPanel({
                   />
                 </label>
                 <label>
-                  <span>透かし不透明度（%）</span>
+                  <span>{copy.watermarkOpacity}</span>
                   <input
                     type="number"
                     min="0"
@@ -1282,9 +1332,9 @@ export function AutomationBatchPanel({
             ) : null}
 
             <fieldset disabled={disableActions || batchRunning}>
-              <legend>出力先</legend>
+              <legend>{copy.destination}</legend>
               <label>
-                <span>保存方法</span>
+                <span>{copy.saveMethod}</span>
                 <select
                   value={batchOutputMode}
                   onChange={(event) =>
@@ -1293,30 +1343,35 @@ export function AutomationBatchPanel({
                     )
                   }
                 >
-                  {OUTPUT_MODE_LABELS.map(({ value, label }) => (
+                  {outputModeLabels.map(({ value, label }) => (
                     <option key={value} value={value}>
                       {label}
                     </option>
                   ))}
                 </select>
               </label>
-              <button type="submit">バッチ変換を開始</button>
+              <button type="submit">{copy.startBatch}</button>
             </fieldset>
           </form>
 
           {batchProgress ? (
             <section aria-labelledby={`${id}-batch-progress-title`}>
-              <h4 id={`${id}-batch-progress-title`}>変換の進捗</h4>
+              <h4 id={`${id}-batch-progress-title`}>{copy.progressHeading}</h4>
               <progress
-                aria-label="バッチ変換の進捗"
+                aria-label={copy.progressLabel}
                 max={Math.max(1, batchProgress.total)}
                 value={progressValue(batchProgress)}
               />
               <p aria-live="polite">
-                完了 {batchProgress.completed}件 / 失敗 {batchProgress.failed}件
-                / 全{batchProgress.total}件
+                {formatStudioMessage(copy.progressSummary, {
+                  completed: batchProgress.completed,
+                  failed: batchProgress.failed,
+                  total: batchProgress.total,
+                })}
                 {batchProgress.active > 0
-                  ? `（処理中 ${batchProgress.active}件）`
+                  ? formatStudioMessage(copy.activeSummary, {
+                      active: batchProgress.active,
+                    })
                   : ''}
               </p>
             </section>
@@ -1328,16 +1383,16 @@ export function AutomationBatchPanel({
               disabled={cancellingBatch}
               onClick={cancelBatch}
             >
-              {cancellingBatch ? 'キャンセル要求中…' : 'バッチ変換をキャンセル'}
+              {cancellingBatch ? copy.cancelling : copy.cancelBatch}
             </button>
           ) : null}
 
           {batchFailures.length > 0 ? (
             <section aria-labelledby={`${id}-batch-failures-title`}>
-              <h4 id={`${id}-batch-failures-title`}>失敗したファイル</h4>
+              <h4 id={`${id}-batch-failures-title`}>{copy.failedFiles}</h4>
               <ul>
                 {batchFailures.map((failure) => (
-                  <li key={failure.id}>{formatFailure(failure)}</li>
+                  <li key={failure.id}>{formatFailure(failure, copy)}</li>
                 ))}
               </ul>
             </section>
@@ -1351,13 +1406,13 @@ export function AutomationBatchPanel({
           role="tabpanel"
           aria-labelledby={`${id}-icons-tab`}
         >
-          <h3>アイコンプリセット一括書き出し</h3>
+          <h3>{copy.iconHeading}</h3>
           <p>
-            出力元: <strong>{documentLabel}</strong>
+            {copy.exportSource} <strong>{resolvedDocumentLabel}</strong>
           </p>
 
           <fieldset disabled={disableActions}>
-            <legend>書き出すサイズ</legend>
+            <legend>{copy.exportSizes}</legend>
             {allPresets.map((preset) => (
               <div key={preset.id}>
                 <label>
@@ -1368,15 +1423,21 @@ export function AutomationBatchPanel({
                       togglePreset(preset.id, event.target.checked)
                     }
                   />
-                  {preset.label}（{preset.width} × {preset.height}）
+                  {formatStudioMessage(copy.presetDimensions, {
+                    label: preset.label,
+                    width: preset.width,
+                    height: preset.height,
+                  })}
                 </label>
                 {!preset.builtIn ? (
                   <button
                     type="button"
-                    aria-label={`${preset.label}を削除`}
+                    aria-label={formatStudioMessage(copy.removePresetLabel, {
+                      label: preset.label,
+                    })}
                     onClick={() => removeUserPreset(preset)}
                   >
-                    削除
+                    {copy.remove}
                   </button>
                 ) : null}
               </div>
@@ -1385,9 +1446,9 @@ export function AutomationBatchPanel({
 
           <form onSubmit={addUserPreset}>
             <fieldset disabled={disableActions}>
-              <legend>ユーザー定義プリセットを追加</legend>
+              <legend>{copy.addCustomPreset}</legend>
               <label>
-                <span>プリセット名</span>
+                <span>{copy.presetName}</span>
                 <input
                   type="text"
                   required
@@ -1397,7 +1458,7 @@ export function AutomationBatchPanel({
                 />
               </label>
               <label>
-                <span>幅（px）</span>
+                <span>{copy.widthPx}</span>
                 <input
                   type="number"
                   min="1"
@@ -1408,7 +1469,7 @@ export function AutomationBatchPanel({
                 />
               </label>
               <label>
-                <span>高さ（px）</span>
+                <span>{copy.heightPx}</span>
                 <input
                   type="number"
                   min="1"
@@ -1419,7 +1480,7 @@ export function AutomationBatchPanel({
                 />
               </label>
               <label>
-                <span>ファイル名</span>
+                <span>{copy.fileName}</span>
                 <input
                   type="text"
                   required
@@ -1429,14 +1490,14 @@ export function AutomationBatchPanel({
                 />
               </label>
               <label>
-                <span>フィット方法</span>
+                <span>{copy.fitMethod}</span>
                 <select
                   value={presetFit}
                   onChange={(event) =>
                     setPresetFit(event.target.value as IconExportPreset['fit'])
                   }
                 >
-                  {Object.entries(FIT_LABELS).map(([value, label]) => (
+                  {Object.entries(fitLabels).map(([value, label]) => (
                     <option key={value} value={value}>
                       {label}
                     </option>
@@ -1444,7 +1505,7 @@ export function AutomationBatchPanel({
                 </select>
               </label>
               <label>
-                <span>背景色</span>
+                <span>{copy.backgroundColor}</span>
                 <input
                   type="text"
                   required
@@ -1452,14 +1513,14 @@ export function AutomationBatchPanel({
                   onChange={(event) => setPresetBackground(event.target.value)}
                 />
               </label>
-              <button type="submit">プリセットを追加</button>
+              <button type="submit">{copy.addPreset}</button>
             </fieldset>
           </form>
 
           <fieldset disabled={disableActions}>
-            <legend>アイコンの出力先</legend>
+            <legend>{copy.iconDestination}</legend>
             <label>
-              <span>保存方法</span>
+              <span>{copy.saveMethod}</span>
               <select
                 value={iconOutputMode}
                 onChange={(event) =>
@@ -1468,7 +1529,7 @@ export function AutomationBatchPanel({
                   )
                 }
               >
-                {OUTPUT_MODE_LABELS.map(({ value, label }) => (
+                {outputModeLabels.map(({ value, label }) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
@@ -1476,7 +1537,7 @@ export function AutomationBatchPanel({
               </select>
             </label>
             <button type="button" onClick={exportIcons}>
-              選択したプリセットを書き出し
+              {copy.exportSelectedPresets}
             </button>
           </fieldset>
         </div>

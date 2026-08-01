@@ -14,6 +14,7 @@ import {
 import { SelectionMask } from '../selection/mask'
 import { encodeSelectionMaskForProject } from '../selection/codec'
 import legacyProjectV1 from './fixtures/project-v1.pwx.json?raw'
+import { designSizeToPixels } from './designPresets'
 
 const timestamp = '2026-07-30T03:00:00.000Z'
 
@@ -62,6 +63,46 @@ describe('project schema', () => {
     expect(parseProject(serializeProject(project))).toEqual(project)
   })
 
+  it('round-trips print dimensions and rejects metadata that mismatches pixels', () => {
+    const canvasSize = designSizeToPixels(210, 297, 'mm', 300)
+    const project = createProjectDocument({
+      canvasSize,
+      fabricCanvas: { objects: [] },
+      physicalSize: {
+        unit: 'mm',
+        widthMm: 210,
+        heightMm: 297,
+        sourceDpi: 300,
+      },
+      updatedAt: timestamp,
+    })
+
+    expect(
+      parseProject(serializeProject(project)).pages[0].physicalSize,
+    ).toEqual({
+      unit: 'mm',
+      widthMm: 210,
+      heightMm: 297,
+      sourceDpi: 300,
+    })
+    expect(() =>
+      validateProjectDocument({
+        ...project,
+        pages: [
+          {
+            ...project.pages[0],
+            physicalSize: {
+              unit: 'mm',
+              widthMm: 100,
+              heightMm: 100,
+              sourceDpi: 300,
+            },
+          },
+        ],
+      }),
+    ).toThrow(/does not match/u)
+  })
+
   it('reports malformed JSON separately from schema errors', () => {
     expect(() => parseProject('{not json')).toThrowError(
       expect.objectContaining<ProjectFormatError>({
@@ -83,7 +124,7 @@ describe('project schema', () => {
     )
   })
 
-  it.each([0, 3, 99])(
+  it.each([0, 5, 99])(
     'rejects unsupported schema version %s with a migration-ready error',
     (schemaVersion) => {
       const value = { ...makeProject(), schemaVersion }
@@ -108,14 +149,7 @@ describe('project schema', () => {
       updatedAt: current.updatedAt,
     }
 
-    expect(validateProjectDocument(legacy)).toEqual({
-      ...current,
-      schemaVersion: 2,
-      editorState: {
-        guides: [],
-        snapTolerance: 8,
-      },
-    })
+    expect(validateProjectDocument(legacy)).toEqual(current)
   })
 
   it('migrates the checked-in version 1 golden project fixture', () => {
@@ -135,6 +169,229 @@ describe('project schema', () => {
       },
     })
     expect(migrated.fabricCanvas.objects).toHaveLength(1)
+    expect(migrated.pages).toHaveLength(1)
+    expect(migrated.pages[0].layerTree).toHaveLength(1)
+  })
+
+  it('migrates schema version 2 editor state into its single canonical page', () => {
+    const current = makeProject()
+    const migrated = validateProjectDocument({
+      appId: PROJECT_APP_ID,
+      schemaVersion: 2,
+      canvasSize: current.canvasSize,
+      fabricCanvas: current.fabricCanvas,
+      editorState: {
+        guides: [{ axis: 'x', position: 320 }],
+        snapTolerance: 5,
+      },
+      metadata: current.metadata,
+      updatedAt: timestamp,
+    })
+
+    expect(migrated.pages).toHaveLength(1)
+    expect(migrated.pages[0].editorState).toEqual({
+      guides: [{ axis: 'x', position: 320 }],
+      snapTolerance: 5,
+    })
+    expect(migrated.editorState).toBe(migrated.pages[0].editorState)
+  })
+
+  it('serializes pages as the source of truth without duplicating active renderer data', () => {
+    const project = makeProject()
+    const source = serializeProject(project)
+    const persisted = JSON.parse(source) as Record<string, unknown>
+
+    expect(persisted.pages).toBeDefined()
+    expect(persisted.activePageId).toBe('page-1')
+    expect(persisted).not.toHaveProperty('canvasSize')
+    expect(persisted).not.toHaveProperty('fabricCanvas')
+    expect(persisted).not.toHaveProperty('editorState')
+    expect(parseProject(source)).toEqual(project)
+  })
+
+  it('migrates schema version 3 multi-page documents to version 4', () => {
+    const first = makeProject()
+    const page = first.pages[0]
+    const source = {
+      appId: PROJECT_APP_ID,
+      schemaVersion: 3,
+      pages: [
+        page,
+        {
+          ...page,
+          id: 'page-2',
+          name: 'Second page',
+          canvasSize: { width: 1080, height: 1920 },
+          editorState: { guides: [], snapTolerance: 8 },
+        },
+      ],
+      activePageId: 'page-2',
+      metadata: first.metadata,
+      updatedAt: timestamp,
+    }
+
+    const migrated = validateProjectDocument(source)
+    expect(migrated.schemaVersion).toBe(PROJECT_SCHEMA_VERSION)
+    expect(migrated.pages).toHaveLength(2)
+    expect(migrated.canvasSize).toEqual({ width: 1080, height: 1920 })
+    expect(migrated.fabricCanvas).toBe(migrated.pages[1].fabricCanvas)
+  })
+
+  it('round-trips schema version 4 page transitions and element animations', () => {
+    const animated = createProjectDocument({
+      canvasSize: { width: 1280, height: 720 },
+      fabricCanvas: {
+        objects: [{ type: 'IText', editorId: 'heading' }],
+      },
+      timeline: {
+        durationMs: 3_000,
+        transition: {
+          type: 'slide-left',
+          durationMs: 300,
+          easing: 'ease-in-out',
+        },
+        elements: {
+          heading: [
+            {
+              id: 'heading-enter',
+              phase: 'enter',
+              effect: 'slide-up',
+              start: { mode: 'with-page', delayMs: 200 },
+              durationMs: 500,
+              easing: 'ease-out',
+              distancePx: 48,
+            },
+            {
+              id: 'heading-pulse',
+              phase: 'emphasis',
+              effect: 'pulse',
+              start: { mode: 'after-previous', delayMs: 100 },
+              durationMs: 400,
+            },
+          ],
+        },
+      },
+      updatedAt: timestamp,
+    })
+
+    expect(parseProject(serializeProject(animated))).toEqual(animated)
+    expect(animated.pages[0].timeline?.elements.heading).toHaveLength(2)
+  })
+
+  it('validates after-previous timing in the same global order as playback', () => {
+    expect(() =>
+      createProjectDocument({
+        canvasSize: { width: 800, height: 600 },
+        fabricCanvas: {
+          objects: [
+            { type: 'Rect', editorId: 'first' },
+            { type: 'Rect', editorId: 'second' },
+          ],
+        },
+        timeline: {
+          durationMs: 1_000,
+          elements: {
+            first: [
+              {
+                id: 'first-enter',
+                phase: 'enter',
+                effect: 'fade',
+                start: { mode: 'with-page' },
+                durationMs: 600,
+              },
+            ],
+            second: [
+              {
+                id: 'second-enter',
+                phase: 'enter',
+                effect: 'fade',
+                start: { mode: 'after-previous' },
+                durationMs: 500,
+              },
+            ],
+          },
+        },
+        updatedAt: timestamp,
+      }),
+    ).toThrow(/beyond the page duration/u)
+  })
+
+  it('rejects a zero-duration visible transition before runtime playback', () => {
+    expect(() =>
+      createProjectDocument({
+        canvasSize: { width: 800, height: 600 },
+        fabricCanvas: { objects: [] },
+        timeline: {
+          durationMs: 1_000,
+          transition: { type: 'fade', durationMs: 0 },
+          elements: {},
+        },
+        updatedAt: timestamp,
+      }),
+    ).toThrow(/transition is invalid/u)
+  })
+
+  it('validates inactive renderer payloads before a multi-page project opens', () => {
+    const current = makeProject()
+    expect(() =>
+      validateProjectDocument({
+        appId: PROJECT_APP_ID,
+        schemaVersion: PROJECT_SCHEMA_VERSION,
+        pages: [
+          current.pages[0],
+          {
+            ...current.pages[0],
+            id: 'unsafe-page',
+            name: 'Unsafe',
+            fabricCanvas: {
+              objects: [
+                {
+                  type: 'Image',
+                  editorId: 'remote-image',
+                  src: 'https://example.com/image.png',
+                },
+              ],
+            },
+            layerTree: undefined,
+          },
+        ],
+        activePageId: 'page-1',
+        metadata: current.metadata,
+        updatedAt: timestamp,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'invalid-schema',
+        message: expect.stringContaining('cannot be restored safely'),
+      }),
+    )
+  })
+
+  it('rejects a schema-v4 canonical layer tree that contradicts Fabric', () => {
+    const current = makeProject()
+    const contradictoryTree = structuredClone(
+      current.pages[0].layerTree,
+    ) as ProjectDocument['pages'][number]['layerTree']
+    contradictoryTree[0].id = 'not-the-renderer-layer'
+
+    expect(() =>
+      validateProjectDocument({
+        ...current,
+        pages: [
+          {
+            ...current.pages[0],
+            layerTree: contradictoryTree,
+          },
+        ],
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'invalid-schema',
+        message: expect.stringContaining(
+          'Canonical layer tree does not match the renderer',
+        ),
+      }),
+    )
   })
 
   it('validates version 2 guides and compressed selection-mask metadata', () => {

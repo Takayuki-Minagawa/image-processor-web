@@ -81,6 +81,31 @@ const deferred = <T>(): {
   return { promise, resolve }
 }
 
+describe('FabricEditorEngine export multiplier safety', () => {
+  it('uses an exact multiplier above the interactive cap after validating output dimensions', async () => {
+    const engine = createEngine()
+    const toDataUrl = vi
+      .spyOn(engine.getCanvas(), 'toDataURL')
+      .mockReturnValue('data:image/png;base64,AA==')
+
+    await engine.exportDataUrl('png', 1, 16, {
+      exactSafeMultiplier: true,
+    })
+
+    expect(toDataUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ multiplier: 16 }),
+    )
+  })
+
+  it('rejects an exact export multiplier outside the shared raster budget', async () => {
+    const engine = createEngine()
+
+    await expect(
+      engine.exportDataUrl('png', 1, 50, { exactSafeMultiplier: true }),
+    ).rejects.toThrow(/safety limit/u)
+  })
+})
+
 describe('FabricEditorEngine top-left coordinates', () => {
   it('places generated rectangles, ellipses, and text at their requested bounds', () => {
     const engine = createEngine()

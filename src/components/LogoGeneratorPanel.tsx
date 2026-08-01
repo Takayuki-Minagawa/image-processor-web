@@ -30,6 +30,11 @@ import {
   ensureLogoFontsLoaded,
 } from '../logo/fonts'
 import type { LogoTemplate } from '../logo/templateSchema'
+import {
+  formatStudioMessage,
+  getStudioComponentCopy,
+} from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
 
 export type LogoColorApplicationTarget = 'fill' | 'stroke'
 
@@ -51,6 +56,7 @@ export interface LogoGeneratorPanelProps {
   fontPairs?: readonly LogoFontPair[]
   paletteColorCount?: number
   className?: string
+  locale?: AppLocale
 }
 
 interface LockState {
@@ -59,14 +65,11 @@ interface LockState {
   layout: boolean
 }
 
-const HARMONY_OPTIONS: ReadonlyArray<{
-  value: ColorHarmonyRule
-  label: string
-}> = [
-  { value: 'complementary', label: '補色' },
-  { value: 'analogous', label: '類似色' },
-  { value: 'triadic', label: 'トライアド' },
-  { value: 'monochromatic', label: 'モノクロマティック' },
+const HARMONY_RULES: readonly ColorHarmonyRule[] = [
+  'complementary',
+  'analogous',
+  'triadic',
+  'monochromatic',
 ]
 
 const normalizeCandidateCount = (value: number | undefined): number =>
@@ -174,9 +177,6 @@ function VariationPreview({
   )
 }
 
-const variationLabel = (variation: LogoVariation, index: number): string =>
-  `候補 ${index + 1}: ${variation.templateName}、配色 ${variation.palette.name}、フォント ${variation.fontPair.name}`
-
 export function LogoGeneratorPanel({
   onInsert,
   initialName = '',
@@ -192,7 +192,30 @@ export function LogoGeneratorPanel({
   onApplyColor,
   paletteColorCount = 8,
   className,
+  locale = 'ja',
 }: LogoGeneratorPanelProps) {
+  const copy = getStudioComponentCopy(locale).logo
+  const harmonyOptions: ReadonlyArray<{
+    value: ColorHarmonyRule
+    label: string
+  }> = HARMONY_RULES.map((value) => ({
+    value,
+    label:
+      value === 'complementary'
+        ? copy.harmonyComplementary
+        : value === 'analogous'
+          ? copy.harmonyAnalogous
+          : value === 'triadic'
+            ? copy.harmonyTriadic
+            : copy.harmonyMonochromatic,
+  }))
+  const variationLabel = (variation: LogoVariation, index: number): string =>
+    formatStudioMessage(copy.variationLabel, {
+      index: index + 1,
+      template: variation.templateName,
+      palette: variation.palette.name,
+      font: variation.fontPair.name,
+    })
   const headingId = useId()
   const candidateListId = useId()
   const paletteHeadingId = useId()
@@ -219,7 +242,7 @@ export function LogoGeneratorPanel({
   const [isExtracting, setIsExtracting] = useState(false)
   const [isApplyingColor, setIsApplyingColor] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState('名称を入力して候補を生成してください。')
+  const [status, setStatus] = useState(copy.initialStatus)
 
   const selected =
     variations.find((variation) => variation.id === selectedId) ?? null
@@ -286,23 +309,29 @@ export function LogoGeneratorPanel({
       if (nextVariations.length === 0) {
         setVariations([])
         setSelectedId(null)
-        setError('条件に合うロゴ候補がありません。')
-        setStatus('候補は生成されませんでした。')
+        setError(copy.noCandidatesError)
+        setStatus(copy.noCandidatesStatus)
         return
       }
       setVariations(nextVariations)
       setSelectedId(nextVariations[0].id)
       setError(null)
-      setStatus(`${nextVariations.length}件の候補を生成しました。`)
+      setStatus(
+        formatStudioMessage(copy.generatedCount, {
+          count: nextVariations.length,
+        }),
+      )
     } catch (generationError) {
       setVariations([])
       setSelectedId(null)
       setError(
         generationError instanceof Error && generationError.message
-          ? `候補を生成できませんでした: ${generationError.message}`
-          : '候補を生成できませんでした。入力内容を確認してください。',
+          ? formatStudioMessage(copy.generationFailedDetail, {
+              message: generationError.message,
+            })
+          : copy.generationFailed,
       )
-      setStatus('候補は生成されませんでした。')
+      setStatus(copy.noCandidatesStatus)
     }
   }
 
@@ -325,7 +354,9 @@ export function LogoGeneratorPanel({
     extractionRequest.current = request
     setIsExtracting(true)
     setError(null)
-    setStatus(`${sourceLabel}から主要色を抽出しています。`)
+    setStatus(
+      formatStudioMessage(copy.extractingColors, { source: sourceLabel }),
+    )
 
     try {
       const image = await source()
@@ -338,11 +369,18 @@ export function LogoGeneratorPanel({
       setExtractedColors(colors)
       setSelectedExtractedColor(null)
       if (colors.length === 0) {
-        setError(`${sourceLabel}に抽出できる不透明な色が見つかりませんでした。`)
-        setStatus('主要色は抽出されませんでした。')
+        setError(
+          formatStudioMessage(copy.noOpaqueColors, { source: sourceLabel }),
+        )
+        setStatus(copy.colorsNotExtracted)
         return
       }
-      setStatus(`${sourceLabel}から${colors.length}色を抽出しました。`)
+      setStatus(
+        formatStudioMessage(copy.extractedColors, {
+          source: sourceLabel,
+          count: colors.length,
+        }),
+      )
     } catch (extractionError) {
       if (extractionRequest.current !== request) {
         return
@@ -351,10 +389,12 @@ export function LogoGeneratorPanel({
       setSelectedExtractedColor(null)
       setError(
         extractionError instanceof Error && extractionError.message
-          ? `主要色を抽出できませんでした: ${extractionError.message}`
-          : '主要色を抽出できませんでした。',
+          ? formatStudioMessage(copy.extractionFailedDetail, {
+              message: extractionError.message,
+            })
+          : copy.extractionFailed,
       )
-      setStatus('主要色は抽出されませんでした。')
+      setStatus(copy.colorsNotExtracted)
     } finally {
       if (extractionRequest.current === request) {
         setIsExtracting(false)
@@ -373,14 +413,14 @@ export function LogoGeneratorPanel({
 
   const applyPaletteColorToCandidates = (color: HexColor): void => {
     if (locks.colors && selected) {
-      setError('配色の固定を解除してから抽出色を選択してください。')
+      setError(copy.unlockColorsForExtract)
       return
     }
     setSelectedExtractedColor(color)
     setBaseColor(color)
     setError(null)
     if (variations.length === 0) {
-      setStatus(`${color}を基準色に設定しました。`)
+      setStatus(formatStudioMessage(copy.baseColorSet, { color }))
       return
     }
     const nextRevision = seedRevision + 1
@@ -390,14 +430,18 @@ export function LogoGeneratorPanel({
 
   const selectHarmony = (rule: ColorHarmonyRule): void => {
     if (locks.colors && selected) {
-      setError('配色の固定を解除してから配色ルールを変更してください。')
+      setError(copy.unlockColorsForHarmony)
       return
     }
     setHarmonyRule(rule)
     setError(null)
     if (variations.length === 0) {
-      const option = HARMONY_OPTIONS.find(({ value }) => value === rule)
-      setStatus(`${option?.label ?? rule}の配色を選択しました。`)
+      const option = harmonyOptions.find(({ value }) => value === rule)
+      setStatus(
+        formatStudioMessage(copy.harmonySelected, {
+          harmony: option?.label ?? rule,
+        }),
+      )
       return
     }
     const nextRevision = seedRevision + 1
@@ -416,13 +460,18 @@ export function LogoGeneratorPanel({
     try {
       await onApplyColor(selectedExtractedColor, target)
       setStatus(
-        `${selectedExtractedColor}を選択オブジェクトの${target === 'fill' ? '塗り' : '縁取り'}に適用しました。`,
+        formatStudioMessage(copy.colorApplied, {
+          color: selectedExtractedColor,
+          target: target === 'fill' ? copy.fill : copy.stroke,
+        }),
       )
     } catch (applicationError) {
       setError(
         applicationError instanceof Error && applicationError.message
-          ? `色を適用できませんでした: ${applicationError.message}`
-          : '色を適用できませんでした。',
+          ? formatStudioMessage(copy.colorApplyFailedDetail, {
+              message: applicationError.message,
+            })
+          : copy.colorApplyFailed,
       )
     } finally {
       setIsApplyingColor(false)
@@ -431,7 +480,7 @@ export function LogoGeneratorPanel({
 
   const insertSelected = async (): Promise<void> => {
     if (!selected) {
-      setError('挿入する候補を選択してください。')
+      setError(copy.selectCandidate)
       return
     }
     try {
@@ -441,12 +490,16 @@ export function LogoGeneratorPanel({
       await ensureLogoFontsLoaded()
       onInsert(selected)
       setError(null)
-      setStatus(`「${selected.templateName}」を挿入しました。`)
+      setStatus(
+        formatStudioMessage(copy.inserted, { template: selected.templateName }),
+      )
     } catch (insertError) {
       setError(
         insertError instanceof Error && insertError.message
-          ? `候補を挿入できませんでした: ${insertError.message}`
-          : '候補を挿入できませんでした。',
+          ? formatStudioMessage(copy.insertFailedDetail, {
+              message: insertError.message,
+            })
+          : copy.insertFailed,
       )
     }
   }
@@ -457,14 +510,14 @@ export function LogoGeneratorPanel({
       aria-labelledby={headingId}
     >
       <header>
-        <h2 id={headingId}>ロゴテンプレートジェネレーター</h2>
-        <p>名称と配色を指定し、編集可能なロゴ候補をローカルで生成します。</p>
+        <h2 id={headingId}>{copy.heading}</h2>
+        <p>{copy.description}</p>
       </header>
 
       <form onSubmit={onGenerate} noValidate>
         <div className="logo-generator-fields">
           <label>
-            <span>名称</span>
+            <span>{copy.name}</span>
             <input
               type="text"
               value={name}
@@ -474,7 +527,7 @@ export function LogoGeneratorPanel({
             />
           </label>
           <label>
-            <span>イニシャル</span>
+            <span>{copy.initials}</span>
             <input
               type="text"
               value={initials}
@@ -483,7 +536,7 @@ export function LogoGeneratorPanel({
             />
           </label>
           <label>
-            <span>タグライン</span>
+            <span>{copy.tagline}</span>
             <input
               type="text"
               value={tagline}
@@ -492,7 +545,7 @@ export function LogoGeneratorPanel({
             />
           </label>
           <label>
-            <span>基準色</span>
+            <span>{copy.baseColor}</span>
             <input
               type="color"
               value={baseColor}
@@ -504,7 +557,7 @@ export function LogoGeneratorPanel({
             />
           </label>
           <label>
-            <span>配色ルール</span>
+            <span>{copy.harmonyRule}</span>
             <select
               value={harmonyRule}
               disabled={locks.colors && selected !== null}
@@ -512,7 +565,7 @@ export function LogoGeneratorPanel({
                 selectHarmony(event.target.value as ColorHarmonyRule)
               }
             >
-              {HARMONY_OPTIONS.map((option) => (
+              {harmonyOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -521,13 +574,13 @@ export function LogoGeneratorPanel({
           </label>
         </div>
         <div className="logo-generator-actions">
-          <button type="submit">候補を生成</button>
+          <button type="submit">{copy.generate}</button>
           <button
             type="button"
             disabled={variations.length === 0}
             onClick={reshuffle}
           >
-            固定項目を保って再生成
+            {copy.reshuffle}
           </button>
         </div>
       </form>
@@ -538,15 +591,15 @@ export function LogoGeneratorPanel({
         aria-busy={isExtracting}
       >
         <header>
-          <h3 id={paletteHeadingId}>配色アシスタント</h3>
-          <p>
-            ローカル画像または現在のキャンバスから主要色を抽出し、候補の配色に使えます。
-          </p>
+          <h3 id={paletteHeadingId}>{copy.paletteHeading}</h3>
+          <p>{copy.paletteDescription}</p>
         </header>
 
         <div className="logo-palette-source-actions">
           <label className="logo-palette-file">
-            <span>{isExtracting ? '色を抽出中…' : '画像から色を抽出'}</span>
+            <span>
+              {isExtracting ? copy.extracting : copy.extractFromImage}
+            </span>
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp"
@@ -559,10 +612,10 @@ export function LogoGeneratorPanel({
               type="button"
               disabled={isExtracting}
               onClick={() =>
-                void extractColors(getImageData, '現在のキャンバス')
+                void extractColors(getImageData, copy.currentCanvas)
               }
             >
-              現在のキャンバスから色を抽出
+              {copy.extractFromCanvas}
             </button>
           ) : null}
         </div>
@@ -571,13 +624,16 @@ export function LogoGeneratorPanel({
           <div
             className="logo-extracted-palette"
             role="list"
-            aria-label="抽出した主要色"
+            aria-label={copy.extractedPalette}
           >
             {extractedColors.map((color) => (
               <div key={color.hex} role="listitem">
                 <button
                   type="button"
-                  aria-label={`抽出色 ${color.hex}、使用率 ${Math.round(color.ratio * 100)}% をロゴ候補へ適用`}
+                  aria-label={formatStudioMessage(copy.extractedColorLabel, {
+                    color: color.hex,
+                    ratio: Math.round(color.ratio * 100),
+                  })}
                   aria-pressed={selectedExtractedColor === color.hex}
                   disabled={locks.colors && selected !== null}
                   onClick={() => applyPaletteColorToCandidates(color.hex)}
@@ -594,9 +650,7 @@ export function LogoGeneratorPanel({
             ))}
           </div>
         ) : (
-          <p className="logo-palette-empty">
-            画像を選ぶと、抽出した主要色がここに表示されます。
-          </p>
+          <p className="logo-palette-empty">{copy.paletteEmpty}</p>
         )}
 
         {onApplyColor ? (
@@ -606,26 +660,28 @@ export function LogoGeneratorPanel({
               disabled={!selectedExtractedColor || isApplyingColor}
               onClick={() => void applyColorToEditor('fill')}
             >
-              選択色を塗りに適用
+              {copy.applyFill}
             </button>
             <button
               type="button"
               disabled={!selectedExtractedColor || isApplyingColor}
               onClick={() => void applyColorToEditor('stroke')}
             >
-              選択色を縁取りに適用
+              {copy.applyStroke}
             </button>
           </div>
         ) : null}
 
         <fieldset className="logo-harmony-suggestions">
-          <legend>配色ルールの提案</legend>
+          <legend>{copy.harmonySuggestions}</legend>
           <div>
-            {HARMONY_OPTIONS.map((option) => (
+            {harmonyOptions.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                aria-label={`${option.label}の配色を選択`}
+                aria-label={formatStudioMessage(copy.selectHarmonyLabel, {
+                  harmony: option.label,
+                })}
                 aria-pressed={harmonyRule === option.value}
                 disabled={locks.colors && selected !== null}
                 onClick={() => selectHarmony(option.value)}
@@ -648,7 +704,7 @@ export function LogoGeneratorPanel({
       </section>
 
       <fieldset className="logo-generator-locks">
-        <legend>固定オプション</legend>
+        <legend>{copy.lockOptions}</legend>
         <label>
           <input
             type="checkbox"
@@ -661,7 +717,7 @@ export function LogoGeneratorPanel({
               }))
             }
           />
-          配色を固定
+          {copy.lockColors}
         </label>
         <label>
           <input
@@ -675,7 +731,7 @@ export function LogoGeneratorPanel({
               }))
             }
           />
-          フォントを固定
+          {copy.lockFonts}
         </label>
         <label>
           <input
@@ -689,7 +745,7 @@ export function LogoGeneratorPanel({
               }))
             }
           />
-          レイアウトを固定
+          {copy.lockLayout}
         </label>
       </fieldset>
 
@@ -702,7 +758,7 @@ export function LogoGeneratorPanel({
         <ul
           id={candidateListId}
           className="logo-candidate-grid"
-          aria-label="ロゴ候補"
+          aria-label={copy.candidates}
         >
           {variations.map((variation, index) => (
             <li key={variation.id}>
@@ -729,7 +785,7 @@ export function LogoGeneratorPanel({
         </ul>
       ) : (
         <p id={candidateListId} className="logo-candidate-empty">
-          生成された候補はありません。
+          {copy.emptyCandidates}
         </p>
       )}
 
@@ -738,21 +794,23 @@ export function LogoGeneratorPanel({
         disabled={!selected}
         onClick={() => void insertSelected()}
       >
-        選択した候補を挿入
+        {copy.insertSelected}
       </button>
 
       <p className="logo-font-attribution">
-        同梱フォント：
+        {copy.bundledFonts}
         {BUNDLED_LOGO_FONT_LICENSES.map(({ family, license, url }, index) => (
           <span key={family}>
-            {index > 0 ? '、' : ''}
+            {index > 0 ? copy.listSeparator : ''}
             <a href={url} target="_blank" rel="noreferrer noopener">
               {family}
             </a>
-            （{license}）
+            {copy.licenseOpen}
+            {license}
+            {copy.licenseClose}
           </span>
         ))}
-        。いずれも同梱して自己ホストしており、外部のフォント配信元へ接続しません。
+        {copy.fontAttribution}
       </p>
     </section>
   )

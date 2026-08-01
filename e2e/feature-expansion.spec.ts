@@ -225,6 +225,7 @@ test.describe('Feature expansion studio', () => {
     const dialog = await openStudio(page)
     await expectNoSeriousAccessibilityViolations(page)
 
+    await dialog.getByRole('tab', { name: 'ロゴ生成' }).click()
     const logoPanel = dialog.getByRole('tabpanel', {
       name: 'ロゴ生成',
     })
@@ -437,11 +438,22 @@ test.describe('Feature expansion studio', () => {
       const path = await download.path()
       expect(path).not.toBeNull()
       const project = JSON.parse(await readFile(path!, 'utf8')) as {
-        editorState: {
-          guides: Array<{ axis: 'x' | 'y'; position: number }>
-        }
+        activePageId: string
+        pages: Array<{
+          id: string
+          editorState: {
+            guides: Array<{ axis: 'x' | 'y'; position: number }>
+          }
+        }>
       }
-      return project.editorState.guides
+      const activePage = project.pages.find(
+        ({ id }) => id === project.activePageId,
+      )
+      expect(
+        activePage,
+        'Saved project must contain its active page.',
+      ).toBeTruthy()
+      return activePage!.editorState.guides
     }
 
     const guides = await readGuides()
@@ -915,6 +927,7 @@ test.describe('Feature expansion studio', () => {
     await addColoredRectangle(page, '#123456')
 
     const dialog = await openStudio(page)
+    await dialog.getByRole('tab', { name: 'ロゴ生成' }).click()
     const logoPanel = dialog.getByRole('tabpanel', { name: 'ロゴ生成' })
     await logoPanel
       .getByRole('button', { name: '現在のキャンバスから色を抽出' })
@@ -957,6 +970,7 @@ test.describe('Feature expansion studio', () => {
     test.setTimeout(60_000)
     await createSmallCanvas(page, 'Logo icon E2E', 128, 128)
     let dialog = await openStudio(page)
+    await dialog.getByRole('tab', { name: 'ロゴ生成' }).click()
     const logoPanel = dialog.getByRole('tabpanel', { name: 'ロゴ生成' })
     await logoPanel.getByLabel('名称').fill('Orbit Seven')
     await logoPanel.getByLabel('イニシャル').fill('O7')
@@ -1028,15 +1042,24 @@ test.describe('Feature expansion studio', () => {
     const filterPanel = dialog.getByRole('region', {
       name: '詳細フィルター',
     })
+    const preview = filterPanel.getByRole('region', {
+      name: '実画像フィルタープレビュー',
+    })
     await filterPanel
       .getByRole('checkbox', { name: 'レベル補正を有効化' })
       .check()
     await filterPanel.getByLabel('入力ブラック').fill('24')
     await filterPanel.getByLabel('ガンマ').fill('1.25')
-
+    await expect(preview).toHaveAttribute('aria-busy', 'true')
+    await expect(preview).toHaveAttribute('aria-busy', 'false')
     await expect(
-      filterPanel.locator('[data-filter-id="levels"]'),
-    ).toHaveScreenshot('advanced-levels-filter.png', {
+      preview.getByRole('img', { name: 'フィルター適用後のプレビュー' }),
+    ).toBeVisible()
+
+    const levels = filterPanel.locator('[data-filter-id="levels"]')
+    await levels.scrollIntoViewIfNeeded()
+
+    await expect(levels).toHaveScreenshot('advanced-levels-filter.png', {
       animations: 'disabled',
       maxDiffPixelRatio: 0.05,
       threshold: 0.25,

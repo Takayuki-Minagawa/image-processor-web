@@ -1,23 +1,28 @@
 # Pixelweave Studio
 
-Pixelweave Studioは、編集対象の画像データをブラウザ内で処理する、レイヤー対応の画像編集Webアプリです。Photoshop/GIMPの代表的な編集フローに加え、ロゴ制作、マクロ、バッチ変換、ピクセル選択をインストール不要のデスクトップ向けアプリとして実装しています。背景除去だけは、利用者が明示同意した場合にモデルを外部から取得します。画像本体をその取得先へ送信することはありません。詳細は[背景除去モデル](#背景除去モデル)を参照してください。
+Pixelweave Studioは、編集対象の画像データをブラウザ内で処理する、レイヤー対応の画像編集・デザインWebアプリです。Photoshop/GIMPの代表的な編集フローに加え、複数ページ、素材、テンプレート、図表、アニメーション、ロゴ制作、マクロ、バッチ変換、ピクセル選択をインストール不要で実装しています。背景除去だけは、利用者が明示同意した場合にモデルを外部から取得します。画像本体をその取得先へ送信することはありません。詳細は[背景除去モデル](#背景除去モデル)を参照してください。
 
 ## 主な機能
 
 - PNG / JPEG / WebP / SVGのドラッグ&ドロップ、ファイル選択、クリップボード貼り付け
 - 選択、移動、拡大縮小、回転、パン、ズーム、crop、整列、等間隔分布、ルーラーからドラッグできるガイド、スナップ
 - ブラシ、消しゴム、矩形、楕円、テキスト、縁取り、グラデーション、シャドウ、字間・行間、円弧テキスト
-- レイヤーの追加、複製、削除、名前変更、並べ替え、表示、ロック、透明度、基本ブレンド、調整レイヤー
+- レイヤーの追加、複製、削除、名前変更、並べ替え、表示、ロック、透明度、基本ブレンド、調整レイヤー、入れ子グループ、クリッピングフレーム、8bitレイヤーマスク
 - 基本調整に加え、シャープ、エンボス、ノイズ、ピクセレート、セピア、反転、レベル、トーンカーブ、ホワイトバランス、ビネット、グラデーションマップ、デュオトーン、ハーフトーン、グリッチ
 - 自動選択、なげなわ、追加・除外・交差、反転、フェザー、拡張・縮小を扱う8bit選択マスク
-- Undo / Redo、コピー / 切り取り / 貼り付け、操作コマンド、マクロ記録・パラメータ付き再生
+- canvas編集とページ構造・テンプレート・タイムラインを横断するUndo / Redo、コピー / 切り取り / 貼り付け、操作コマンド、マクロ記録・パラメータ付き再生
 - Workerによる複数画像・入力フォルダのリサイズ、形式変換、フィルター、透かし、キャンセル、進捗表示
 - フォルダへの直接出力またはZIP fallback、favicon / PWA / Apple Touch / OGPのアイコンプリセット
 - 配色抽出と補色・類似色・トライアド・モノクロマティック配色、20種類のロゴテンプレート
+- 用途別サイズ、複数ページ、背景、マジックリサイズ、36種類のデザインテンプレート、ブランドキット
+- 遅延読み込み素材、端末内のマイ素材、canvasへの素材drag & drop、画像clip frame、画像drop・境界調整対応の写真grid
+- 日本語フォント、ユーザーフォント、縦書き、箇条書き、テキストエフェクト
+- 再編集可能な表と5種類のグラフ、CSV / TSV貼り付け
+- 要素アニメーション、ページ遷移、プレゼンテーションプレビュー
 - 限定コマンドだけを実行する`eval`なしのスクリプトDSL、端末内への保存、`runScript`マクロ登録
-- 編集可能なschema version 2の`.pwx.json`プロジェクト保存と、version 1プロジェクトの自動移行
-- PNG / JPEG / WebP / SVG書き出し
-- OPFS優先・localStorage fallbackの自動保存と復旧
+- 編集可能なschema version 4の`.pwx.json`プロジェクト保存と、version 1〜3プロジェクトの自動移行
+- PNG / JPEG / WebP / SVG、複数ページPNG ZIP、mm物理寸法・DPI・bleed・crop mark・混在ページ寸法対応PDF、GIF、対応ブラウザでのMP4 / WebM書き出し
+- OPFSのページ差分保存・旧形式復旧・localStorage fallbackを備えた自動保存
 - PWAインストール、オフライン起動
 
 ## 表示と言語
@@ -30,13 +35,13 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 
 ## 拡張ツールと安全境界
 
-上部の **Studio** から、ロゴ生成、自動化・バッチ、選択・背景・スクリプトを開きます。
+上部の **Studio** から、デザイン、ロゴ生成、自動化・バッチ、選択・背景・スクリプトを開きます。デザインタブではページ、素材、テキスト、テンプレート、図表、アニメーション、複数ページ出力をまとめて操作できます。
 
 - SVGはFabric.jsへ渡す前にサニタイズし、`script`、イベント属性、`foreignObject`、外部参照、危険なCSS、過大な要素数・寸法を拒否または除去します。SVG書き出し時のラスターレイヤーはData URLとして埋め込まれます。
 - マクロは検証済みコマンドだけを`.pwxmacro.json`へ保存します。再生は成功時にUndo 1回分として確定し、失敗またはキャンセル時は再生前のsnapshotへ戻します。
 - バッチWorkerで実行できるのは`resizeImage`、`applyFilter`、`addWatermark`など、`batchSafe`と定義したコマンドだけです。ポインター位置や現在の選択に依存する操作は受け付けません。
 - スクリプトは生のJavaScriptではありません。`editor.resize`、`editor.applyFilter`、`editor.addText`、`editor.forEachLayer`だけを解釈する上限付きDSLで、`eval` / `Function`を使わず、`fetch`、DOM、Worker、import、prototype access、任意loopを拒否します。
-- ロゴ生成は20種類の検証済みJSONテンプレートを使います。フォントファイルは同梱もダウンロードもせず、端末にあるフォントと`system-ui` / `sans-serif` / `serif` fallbackを使うため、端末間で字形や改行が変わることがあります。
+- ロゴ生成は20種類の検証済みJSONテンプレートを使います。デザイン用の同梱フォントと端末フォントを共通レジストリで扱い、利用できないfamilyはfallback表示します。ユーザーフォントbytesはプロジェクトへ埋め込みません。
 
 ### 背景除去モデル
 
@@ -50,9 +55,9 @@ descriptorにはversion、bytes、SHA-256 `309c8469258dda742793dce0ebea8e6dd3931
 
 ## プロジェクト形式
 
-現在の保存形式は`.pwx.json` schema version 2です。Fabric.jsのJSONとは別に、ガイド、スナップ許容距離、lossless符号化した8bit選択マスクを`editorState`へ保存します。
+現在の保存形式は`.pwx.json` schema version 4です。ドキュメントは複数ページを持ち、各ページにpixel寸法、任意のmm仕上がり寸法と作成時DPI、Fabric.js payload、canonicalレイヤーツリー、背景、ガイド、スナップ許容距離、lossless符号化した8bit選択・レイヤーマスク、任意のアニメーションtimelineを保存します。canonicalレイヤーツリーとrenderer payloadが矛盾するfileは、canvas復元前に拒否します。
 
-version 1ファイルはruntime validation後に、空のガイド・選択マスクと既定のスナップ値を補ってversion 2へ移行します。次回保存時はversion 2になります。未知versionや寸法不一致・過大な選択マスクは、現在のドキュメントを変更せず明示エラーにします。
+version 1・2の単一Canvasは1ページのドキュメントへ、version 3の複数ページは静止timelineを補ってversion 4へ移行します。次回保存時はversion 4になります。serializerは互換aliasを重複出力しません。未知version、寸法不一致、過大な画像・レイヤー・マスク・timelineは、現在のドキュメントを変更せず明示エラーにします。
 
 ## ローカル実行
 
@@ -94,16 +99,17 @@ typescript-eslint向けには`@typescript/typescript6`を`typescript` aliasと�
 
 ## キーボードショートカット
 
-| 操作                            | macOS                  | Windows / Linux     |
-| ------------------------------- | ---------------------- | ------------------- |
-| Undo / Redo                     | `⌘Z` / `⇧⌘Z`           | `Ctrl+Z` / `Ctrl+Y` |
-| 保存                            | `⌘S`                   | `Ctrl+S`            |
-| 開く                            | `⌘O`                   | `Ctrl+O`            |
-| コピー / 切取 / 貼付            | `⌘C/X/V`               | `Ctrl+C/X/V`        |
-| 選択 / ブラシ / 消しゴム / パン | `V` / `B` / `E` / `H`  | 同左                |
-| ズームイン / アウト / 100%      | `+` / `-` / `0`        | 同左                |
-| 選択を削除                      | `Delete` / `Backspace` | 同左                |
-| ヘルプ                          | `?`                    | 同左                |
+| 操作                            | macOS                  | Windows / Linux           |
+| ------------------------------- | ---------------------- | ------------------------- |
+| Undo / Redo                     | `⌘Z` / `⇧⌘Z`           | `Ctrl+Z` / `Ctrl+Y`       |
+| 保存                            | `⌘S`                   | `Ctrl+S`                  |
+| 開く                            | `⌘O`                   | `Ctrl+O`                  |
+| コピー / 切取 / 貼付            | `⌘C/X/V`               | `Ctrl+C/X/V`              |
+| グループ化 / 解除               | `⌘G` / `⇧⌘G`           | `Ctrl+G` / `Shift+Ctrl+G` |
+| 選択 / ブラシ / 消しゴム / パン | `V` / `B` / `E` / `H`  | 同左                      |
+| ズームイン / アウト / 100%      | `+` / `-` / `0`        | 同左                      |
+| 選択を削除                      | `Delete` / `Backspace` | 同左                      |
+| ヘルプ                          | `?`                    | 同左                      |
 
 フォームへ入力中は編集用の1文字ショートカットを実行しません。
 
@@ -121,6 +127,7 @@ PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証しま�
 
 - [初期調査・作業計画](./IMAGE_EDITOR_WORK_PLAN.md)
 - [機能拡張作業計画](./FEATURE_EXPANSION_WORK_PLAN.md)
+- [Canva parity作業計画](./CANVA_PARITY_WORK_PLAN.md)
 - [実装状況](./docs/IMPLEMENTATION_STATUS.md)
 - [Architecture Decision Records](./docs/adr/)
 
@@ -130,16 +137,16 @@ PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証しま�
 - PSD / XCF / OpenRasterは読み込みません。SVGは安全化できる要素だけを対象とし、アニメーション、外部参照、埋め込みHTMLは保持しません。
 - ラスターブラシはFabric.jsのパスオブジェクトとして保持します。Photoshop互換のブラシエンジンではありません。
 - 消しゴムは選択レイヤーのマスクではなく、合成スタックを消去する専用ストロークレイヤーです。レイヤー順序で結果が変わります。
-- ピクセル選択はドキュメント単位の8bitマスクです。ブラシと消しゴムはstroke作成時のマスクでclipされ、選択範囲の削除はUndo可能なpixel-deleteレイヤーとして保持されます。基本調整と14種の追加フィルターの選択範囲適用はWorkerで処理します。レイヤーごとの永続マスクとスポイトには未対応です。
-- 調整レイヤーは保存・再編集・表示切替・ラスタライズに対応しますが、Photoshop互換のAdjustment Layer、レイヤーグループ、Smart Objectではありません。
+- ピクセル選択はドキュメント単位の8bitマスクです。ブラシと消しゴムはstroke作成時のマスクでclipされ、選択範囲の削除はUndo可能なpixel-deleteレイヤーとして保持されます。選択範囲からレイヤーマスクを作成・切替・削除・ラスタライズできますが、マスクへ白黒を直接描く専用UIは未対応です。
+- 調整レイヤーとレイヤーグループは保存・再編集・表示切替に対応しますが、Photoshop互換のAdjustment LayerやSmart Objectではありません。
 - カスタムフィルターはWebGL shaderを優先し、WebGL不可・非対応環境では決定論的CPU処理へfallbackします。大画像のタイル化、dirty region、WASM SIMD専用kernel、GPU tile cacheは未対応です。
 - 背景除去モデルbytesは初期配布へ同梱せず、明示同意後に遅延取得します。モデルなしのfallbackは、被写体と背景の色が近い画像、髪、半透明物体で精度が低下します。U2NetPも専用mattingモデルではないため、細い髪や半透明境界は選択ツールでの手直しが必要な場合があります。
 - スクリプトコンソールは安全なDSLであり、任意のJavaScriptやGIMP Script-Fu互換ではありません。
 - 自動保存はブラウザのサイトデータを消すと失われます。重要な編集はプロジェクトファイルへ明示保存してください。
-- 高精度な編集UIはデスクトップ向けです。小画面では閲覧と簡易操作を優先します。
+- スマートフォン・タブレットでは下部ツールレール、インスペクターのボトムシート、全画面Studio、ピンチ・パン・長押しを提供します。実機Safari、VoiceOver、複雑な大規模プロジェクトは継続検証対象です。
 
 ## ライセンス
 
 アプリ本体のライセンスは現時点で未指定です。再利用条件を公開するときに、リポジトリ方針として明示してください。主要な実行時依存はReact、Fabric.js、ONNX Runtime WebがMIT License、LucideがISC Licenseです。明示同意後に取得するU2NetPモデルはApache-2.0です。
 
-同梱フォントは[Inter](https://github.com/rsms/inter)、[Space Grotesk](https://github.com/floriankarsten/space-grotesk)、[Bitter](https://github.com/solmatas/Bitter)、[Manrope](https://github.com/sharanda/manrope)で、いずれもSIL Open Font License 1.1です。Latinサブセットのvariable版を同梱して自己ホストしており、フォント配信元へ接続することはありません。日本語などLatin以外の文字は、各フォントスタックのfallback（OSのシステムフォント）で描画されます。
+同梱フォントは[Inter](https://github.com/rsms/inter)、[Space Grotesk](https://github.com/floriankarsten/space-grotesk)、[Bitter](https://github.com/solmatas/Bitter)、[Manrope](https://github.com/sharanda/manrope)、Noto Sans JP、Noto Serif JPで、いずれもSIL Open Font License 1.1です。variable版を同梱して自己ホストし、日本語fontはunicode-range単位で遅延読み込みするため、フォント配信元へ接続しません。詳細は[ライセンス一覧](./docs/LICENSES.md)を参照してください。

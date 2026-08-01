@@ -58,7 +58,7 @@ export interface EditorUiCopy {
   formatNotes: Record<'png' | 'jpeg' | 'webp' | 'svg', string>
   studioTitle: string
   studioDescription: string
-  studioTabs: Record<'logo' | 'automation' | 'advanced', string>
+  studioTabs: Record<'design' | 'logo' | 'automation' | 'advanced', string>
   studioLoading: string
   toolLabels: Record<'select' | 'brush' | 'eraser' | 'pan', string>
   tools: string
@@ -182,6 +182,7 @@ export const JAPANESE_EDITOR_UI_COPY: EditorUiCopy = {
   studioDescription:
     'ロゴ生成、自動化、選択・背景除去・スクリプトを端末内で実行します。',
   studioTabs: {
+    design: 'デザイン',
     logo: 'ロゴ生成',
     automation: '自動化・バッチ',
     advanced: '選択・背景・スクリプト',

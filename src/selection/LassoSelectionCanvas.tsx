@@ -10,6 +10,8 @@ import type { SelectionPoint } from './algorithms'
 import { appendDistinctLassoPoint, clientPointToDocumentPoint } from './lasso'
 import { SelectionMask } from './mask'
 import MarchingAntsOverlay from './MarchingAntsOverlay'
+import { getStudioComponentCopy } from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
 
 export interface LassoSelectionCanvasProps {
   documentWidth: number
@@ -17,6 +19,7 @@ export interface LassoSelectionCanvasProps {
   previewImage?: ImageData
   selectionMask?: SelectionMask
   disabled?: boolean
+  locale?: AppLocale
   onComplete(
     points: readonly SelectionPoint[],
     modifier?: 'add' | 'subtract',
@@ -44,9 +47,11 @@ export function LassoSelectionCanvas({
   previewImage,
   selectionMask,
   disabled = false,
+  locale = 'ja',
   onComplete,
   onIncomplete,
 }: LassoSelectionCanvasProps) {
+  const copy = getStudioComponentCopy(locale).lasso
   const descriptionId = useId()
   const [points, setPoints] = useState<SelectionPoint[]>([])
   const pointsRef = useRef<SelectionPoint[]>([])
@@ -187,8 +192,7 @@ export function LassoSelectionCanvas({
   return (
     <>
       <p id={descriptionId} className="lasso-canvas-instructions">
-        画像上をポインターで囲み、離すと選択します。Shift
-        で追加、Altで除外、Escで描画中の線を取り消せます。キーボードでは下の座標入力を使用できます。
+        {copy.instructions}
       </p>
       <div
         className="lasso-canvas-shell"
@@ -203,7 +207,7 @@ export function LassoSelectionCanvas({
           width={preview.width}
           height={preview.height}
           role="img"
-          aria-label="なげなわ描画領域"
+          aria-label={copy.canvasLabel}
           aria-describedby={descriptionId}
           aria-disabled={disabled}
           aria-keyshortcuts="Escape"
@@ -214,7 +218,7 @@ export function LassoSelectionCanvas({
           onPointerCancel={cancel}
           onKeyDown={handleKeyDown}
         >
-          なげなわ選択はポインター操作に対応しています。キーボードでは座標入力を使用してください。
+          {copy.fallback}
         </canvas>
         <MarchingAntsOverlay mask={selectionMask} />
         {polyline ? (
