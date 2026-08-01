@@ -20,6 +20,20 @@ describe('parseDelimitedText', () => {
     expect(chartDataToDelimitedText(chart)).toBe(',Sales\nJan,10')
     const table = delimitedTextToTable('Name,Value\nA,1').table
     expect(tableModelToDelimitedText(table)).toBe('Name,Value\nA,1')
+    const formulaLikeTable = delimitedTextToTable(
+      'Item,Value\nNegative,-5\nPositive,+5\nFormula,=A1\nMention,@name',
+    ).table
+    const formulaLikeRoundTrip = tableModelToDelimitedText(formulaLikeTable)
+    expect(formulaLikeRoundTrip).toBe(
+      'Item,Value\nNegative,-5\nPositive,+5\nFormula,=A1\nMention,@name',
+    )
+    expect(
+      delimitedTextToTable(formulaLikeRoundTrip).table.rows.map((row) =>
+        row.cells.map(({ text }) => text),
+      ),
+    ).toEqual(
+      formulaLikeTable.rows.map((row) => row.cells.map(({ text }) => text)),
+    )
     expect(
       serializeDelimitedRows([['=SUM(A1:A2)', '+cmd', '-2', '@link']]),
     ).toBe("'=SUM(A1:A2),'+cmd,'-2,'@link")

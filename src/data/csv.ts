@@ -268,6 +268,8 @@ export const chartDataToDelimitedText = (data: ChartData): string =>
 export const tableModelToDelimitedText = (table: TableModel): string =>
   serializeDelimitedRows(
     table.rows.map((row) => row.cells.map(({ text }) => text)),
+    ',',
+    { protectFormulas: false },
   )
 
 export interface TableImportResult {

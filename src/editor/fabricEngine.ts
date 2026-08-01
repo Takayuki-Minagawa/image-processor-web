@@ -993,6 +993,10 @@ export class FabricEditorEngine {
     reason: EditorChangeReason,
     operation: () => T | Promise<T>,
   ): Promise<T> {
+    if (this.transactionDepth > 0) {
+      this.assertUsable()
+      return operation()
+    }
     const execute = async (): Promise<T> => {
       this.assertUsable()
       const before = this.snapshot()

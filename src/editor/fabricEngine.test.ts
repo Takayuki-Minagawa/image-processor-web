@@ -1184,6 +1184,41 @@ describe('FabricEditorEngine feature expansion', () => {
     expect(engine.snapshot()).toEqual(before)
   })
 
+  it('allows a nested atomic operation to join the active transaction', async () => {
+    const onChanged = vi.fn()
+    const engine = createEngine({ onChanged })
+    onChanged.mockClear()
+
+    await engine.runAtomic('macro', async () => {
+      engine.addRect({ name: 'Outer operation' })
+      await engine.runAtomic('asset', () => {
+        engine.addEllipse({ name: 'Nested operation' })
+      })
+    })
+
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Nested operation',
+      'Outer operation',
+    ])
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    expect(onChanged).toHaveBeenLastCalledWith('macro')
+  })
+
+  it('does not deadlock background image insertion inside an atomic operation', async () => {
+    const engine = createEngine()
+    vi.spyOn(engine, 'importImage').mockResolvedValue('background-layer')
+
+    await expect(
+      engine.runAtomic('background-removal', () =>
+        engine.addImageDataLayer({
+          width: 4,
+          height: 4,
+          data: new Uint8ClampedArray(4 * 4 * 4).fill(255),
+        }),
+      ),
+    ).resolves.toBe('background-layer')
+  })
+
   it('isolates concurrent atomic operations across a rollback', async () => {
     const engine = createEngine()
     const gate = deferred<void>()
