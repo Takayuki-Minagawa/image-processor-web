@@ -32,6 +32,40 @@ describe('DesignTemplateRegistry', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
+  it('retries a template pack after a transient chunk-load rejection', async () => {
+    const load = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('stale chunk'))
+      .mockResolvedValue({
+        schemaVersion: 1,
+        id: 'social-pack',
+        templates: [minimalDesignTemplate()],
+      })
+    const registry = new DesignTemplateRegistry(
+      [
+        {
+          id: 'social-card',
+          packId: 'social-pack',
+          name: 'Social card',
+          category: 'social',
+          tags: [],
+          width: 1080,
+          height: 1080,
+          pageCount: 1,
+        },
+      ],
+      [{ id: 'social-pack', templateCount: 1, load }],
+    )
+
+    await expect(registry.loadTemplate('social-card')).rejects.toThrow(
+      'stale chunk',
+    )
+    await expect(registry.loadTemplate('social-card')).resolves.toMatchObject({
+      template: { id: 'social-card' },
+    })
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects a pack whose index dimensions do not match its payload', async () => {
     const registry = new DesignTemplateRegistry(
       [

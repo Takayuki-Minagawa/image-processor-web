@@ -150,11 +150,7 @@ const splitIntoDataSubBlocks = (data: Uint8Array): Uint8Array[] => {
   return parts
 }
 
-/**
- * Uses legal clear-code resets to keep the code width fixed. This baseline is
- * deterministic and broadly decodable; a future quantizer/compressor can
- * replace it without changing the slideshow or Worker contracts.
- */
+/** Standard GIF LZW with a bounded 4096-entry numeric dictionary. */
 const encodePaletteIndices = async (
   pixels: Uint8Array,
   minimumCodeSize: number,
@@ -166,42 +162,78 @@ const encodePaletteIndices = async (
 ): Promise<Uint8Array> => {
   const clearCode = 1 << minimumCodeSize
   const endCode = clearCode + 1
-  const codeSize = minimumCodeSize + 1
-  const bytes: number[] = []
+  let codeSize = minimumCodeSize + 1
+  let nextCode = endCode + 1
+  const dictionary = new Map<number, number>()
+  let bytes = new Uint8Array(Math.max(256, Math.ceil(pixels.byteLength / 2)))
+  let byteLength = 0
   let bitBuffer = 0
   let bitCount = 0
+
+  const pushByte = (byte: number): void => {
+    if (byteLength === bytes.byteLength) {
+      const grown = new Uint8Array(bytes.byteLength * 2)
+      grown.set(bytes)
+      bytes = grown
+    }
+    bytes[byteLength] = byte
+    byteLength += 1
+  }
 
   const writeCode = (code: number): void => {
     bitBuffer |= code << bitCount
     bitCount += codeSize
     while (bitCount >= 8) {
-      bytes.push(bitBuffer & 0xff)
+      pushByte(bitBuffer & 0xff)
       bitBuffer >>>= 8
       bitCount -= 8
     }
   }
 
   writeCode(clearCode)
-  for (let index = 0; index < pixels.byteLength; index += 1) {
+  let prefix = pixels[0]
+  if (prefix >= colorCount) {
+    throw new RangeError(
+      `GIF frame ${frameIndex + 1} uses palette index ${prefix}, but only ${colorCount} colors exist.`,
+    )
+  }
+  for (let index = 1; index < pixels.byteLength; index += 1) {
     const paletteIndex = pixels[index]
     if (paletteIndex >= colorCount) {
       throw new RangeError(
         `GIF frame ${frameIndex + 1} uses palette index ${paletteIndex}, but only ${colorCount} colors exist.`,
       )
     }
-    writeCode(paletteIndex)
-    if (index + 1 < pixels.byteLength) writeCode(clearCode)
+    const key = prefix * 256 + paletteIndex
+    const existing = dictionary.get(key)
+    if (existing !== undefined) {
+      prefix = existing
+    } else {
+      writeCode(prefix)
+      if (nextCode < 4_096) {
+        dictionary.set(key, nextCode)
+        nextCode += 1
+        if (nextCode > 1 << codeSize && codeSize < 12) codeSize += 1
+      } else {
+        writeCode(clearCode)
+        dictionary.clear()
+        codeSize = minimumCodeSize + 1
+        nextCode = endCode + 1
+      }
+      prefix = paletteIndex
+    }
     if ((index + 1) % 16_384 === 0) {
       throwIfAborted(signal)
       onChunk(index + 1)
       await yieldControl()
     }
   }
+  writeCode(prefix)
   writeCode(endCode)
-  if (bitCount > 0) bytes.push(bitBuffer & 0xff)
+  if (bitCount > 0) pushByte(bitBuffer & 0xff)
   throwIfAborted(signal)
   onChunk(pixels.byteLength)
-  return Uint8Array.from(bytes)
+  return bytes.slice(0, byteLength)
 }
 
 const graphicsControlExtension = (

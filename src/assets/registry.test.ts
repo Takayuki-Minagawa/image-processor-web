@@ -55,6 +55,37 @@ describe('AssetRegistry', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
+  it('retries a pack after a transient chunk-load rejection', async () => {
+    const pack = {
+      schemaVersion: 1 as const,
+      id: 'test-pack',
+      items: [
+        {
+          id: 'test-svg',
+          payload: {
+            type: 'svg' as const,
+            source:
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+          },
+        },
+      ],
+    }
+    const load = vi
+      .fn<AssetPackManifest['load']>()
+      .mockRejectedValueOnce(new Error('stale chunk'))
+      .mockResolvedValue(pack)
+    const registry = new AssetRegistry(
+      [entry()],
+      [{ id: 'test-pack', assetCount: 1, load }],
+    )
+
+    await expect(registry.loadAsset('test-svg')).rejects.toThrow('stale chunk')
+    await expect(registry.loadAsset('test-svg')).resolves.toMatchObject({
+      id: 'test-svg',
+    })
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
   it('sanitizes every SVG payload even when a bundled pack is malformed', async () => {
     const registry = new AssetRegistry(
       [entry()],

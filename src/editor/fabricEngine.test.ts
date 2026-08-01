@@ -1184,6 +1184,30 @@ describe('FabricEditorEngine feature expansion', () => {
     expect(engine.snapshot()).toEqual(before)
   })
 
+  it('isolates concurrent atomic operations across a rollback', async () => {
+    const engine = createEngine()
+    const gate = deferred<void>()
+    const first = engine.runAtomic('macro', async () => {
+      engine.addRect({ name: 'Will roll back' })
+      await gate.promise
+      throw new Error('first operation failed')
+    })
+    const second = engine.runAtomic('script', () => {
+      engine.addEllipse({ name: 'Independent operation' })
+    })
+
+    await Promise.resolve()
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Will roll back',
+    ])
+    gate.resolve()
+    await expect(first).rejects.toThrow('first operation failed')
+    await expect(second).resolves.toBeUndefined()
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Independent operation',
+    ])
+  })
+
   it('persists an immutable pixel selection and clears it after resizing', () => {
     const engine = createEngine()
     const bytes = new Uint8Array(200 * 150)

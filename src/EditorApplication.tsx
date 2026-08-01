@@ -75,6 +75,7 @@ import type {
   StoredZipEntry,
 } from './batch'
 import { assertRestorableEditorSnapshot } from './editor/snapshotValidation'
+import { MAX_LAYER_NAME_LENGTH } from './editor/layerTree'
 import type {
   JsonObject,
   ProjectDocument,
@@ -113,6 +114,10 @@ import type {
   UserAssetMetadata,
   UserAssetRepository,
 } from './assets'
+import {
+  BUILTIN_ASSET_DRAG_MIME_TYPE,
+  parseBuiltinAssetDragPayload,
+} from './assets/dragPayload'
 import type { UserFontMetadata, UserFontRepository } from './fonts'
 import type { BrandKit, BrandKitRepository } from './brand'
 import {
@@ -1117,6 +1122,7 @@ export default function EditorApplication() {
               await dispatcher.dispatch(command, {
                 origin: 'replay',
                 resultAliases: aliases,
+                withinAtomicTransaction: true,
               })
             }
           }),
@@ -1527,27 +1533,24 @@ export default function EditorApplication() {
         designPagesRef.current = [{ id, name: 'Page 1', snapshot: current }]
         activeDesignPageIdRef.current = id
       }
-      const [{ createProjectDocument }, { createProjectPage }] =
-        await Promise.all([
-          import('./editor/project'),
-          import('./editor/designDocument'),
-        ])
-      const pages = designPagesRef.current.map((page) =>
-        createProjectPage({
-          id: page.id,
-          name: page.name,
-          canvasSize: {
-            width: page.snapshot.width,
-            height: page.snapshot.height,
-          },
-          fabricCanvas: asJsonObject(page.snapshot.json),
-          editorState: page.snapshot.editorState,
-          ...(page.background ? { background: page.background } : {}),
-          ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
-          ...(page.timeline ? { timeline: page.timeline } : {}),
-          ...(page.thumbnail ? { thumbnail: page.thumbnail } : {}),
-        }),
-      )
+      const { createProjectDocument } = await import('./editor/project')
+      const pages = designPagesRef.current.map((page) => ({
+        id: page.id,
+        name: page.name,
+        canvasSize: {
+          width: page.snapshot.width,
+          height: page.snapshot.height,
+        },
+        fabricCanvas: asJsonObject(page.snapshot.json),
+        editorState: page.snapshot.editorState ?? {
+          guides: [],
+          snapTolerance: 8,
+        },
+        ...(page.background ? { background: page.background } : {}),
+        ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
+        ...(page.timeline ? { timeline: page.timeline } : {}),
+        ...(page.thumbnail ? { thumbnail: page.thumbnail } : {}),
+      }))
       return createProjectDocument({
         pages,
         activePageId: activeDesignPageIdRef.current,
@@ -2192,9 +2195,9 @@ export default function EditorApplication() {
       const pages = structuredClone(checkpoint.pages) as DesignPageState[]
       const active = pages.find(({ id }) => id === checkpoint.activePageId)
       if (!active) throw new Error(designUi.status.templateFailed)
+      await restoreSnapshot(active.snapshot)
       designPagesRef.current = pages
       activeDesignPageIdRef.current = active.id
-      await restoreSnapshot(active.snapshot)
       historyRef.current.reset(active.snapshot)
       latestSnapshotRef.current = active.snapshot
       revisionRef.current += 1
@@ -2287,8 +2290,8 @@ export default function EditorApplication() {
         await captureActivePageThumbnail(engine)
         const target = designPagesRef.current.find(({ id }) => id === pageId)
         if (!target) return
-        activeDesignPageIdRef.current = pageId
         await restoreSnapshot(target.snapshot)
+        activeDesignPageIdRef.current = pageId
         historyRef.current.reset(target.snapshot)
         documentHistoryRef.current.replaceCurrent(
           captureDesignDocumentCheckpoint(),
@@ -2342,9 +2345,9 @@ export default function EditorApplication() {
           snapshot,
           ...(size.physicalSize ? { physicalSize: size.physicalSize } : {}),
         }
+        await restoreSnapshot(snapshot)
         designPagesRef.current = [...designPagesRef.current, page]
         activeDesignPageIdRef.current = id
-        await restoreSnapshot(snapshot)
         historyRef.current.reset(snapshot)
         refreshHistoryState()
         markDesignDocumentChanged(snapshot, 'ページを追加')
@@ -2382,9 +2385,9 @@ export default function EditorApplication() {
         }
         const pages = [...designPagesRef.current]
         pages.splice(sourceIndex + 1, 0, copy)
+        await restoreSnapshot(copy.snapshot)
         designPagesRef.current = pages
         activeDesignPageIdRef.current = copy.id
-        await restoreSnapshot(copy.snapshot)
         historyRef.current.reset(copy.snapshot)
         refreshHistoryState()
         markDesignDocumentChanged(copy.snapshot, 'ページを複製')
@@ -2417,9 +2420,9 @@ export default function EditorApplication() {
           ({ id }) => id !== activeDesignPageIdRef.current,
         )
         const next = pages[Math.min(sourceIndex, pages.length - 1)]
+        await restoreSnapshot(next.snapshot)
         designPagesRef.current = pages
         activeDesignPageIdRef.current = next.id
-        await restoreSnapshot(next.snapshot)
         historyRef.current.reset(next.snapshot)
         refreshHistoryState()
         markDesignDocumentChanged(next.snapshot, 'ページを削除')
@@ -3520,9 +3523,9 @@ export default function EditorApplication() {
         )
         const pages = [...designPagesRef.current]
         pages.splice(activeIndex, 1, ...expandedPages)
+        await restoreSnapshot(expandedPages[0].snapshot)
         designPagesRef.current = pages
         activeDesignPageIdRef.current = expandedPages[0].id
-        await restoreSnapshot(expandedPages[0].snapshot)
         historyRef.current.reset(expandedPages[0].snapshot)
         refreshHistoryState()
         refreshEditorState()
@@ -3544,7 +3547,7 @@ export default function EditorApplication() {
           kind: 'error',
           message: userFacingErrorMessage(
             error,
-            designUi.status.templateSkipped,
+            designUi.status.templateFailed,
           ),
         })
       } finally {
@@ -3769,10 +3772,30 @@ export default function EditorApplication() {
     [designPages],
   )
 
+  const designBrandSummaries = useMemo(
+    () =>
+      savedBrandKits.map((kit) => ({
+        id: kit.id,
+        name: kit.name,
+        colors: {
+          primary: kit.palettes[0].colors.primary,
+          secondary: kit.palettes[0].colors.secondary,
+          accent: kit.palettes[0].colors.accent,
+        },
+        fonts: {
+          heading: kit.fonts.heading,
+          body: kit.fonts.body,
+        },
+      })),
+    [savedBrandKits],
+  )
+
   const renderPresentationPage = useCallback(
     async (pageId: string, timeMs?: number) => {
       const engine = engineRef.current
-      if (engine) synchronizeActiveDesignPage(engine.snapshot())
+      if (engine && !busyRef.current && !designDocumentOperationRef.current) {
+        synchronizeActiveDesignPage(engine.snapshot())
+      }
       const page = designPagesRef.current.find(({ id }) => id === pageId)
       if (!page) throw new RangeError(`Unknown page: ${pageId}`)
       const multiplier = Math.min(
@@ -3786,7 +3809,12 @@ export default function EditorApplication() {
 
   const exportDesign = useCallback(
     async (request: DesignExportRequest) => {
-      if (designExportAbortRef.current) return
+      if (
+        designExportAbortRef.current ||
+        busyRef.current ||
+        designDocumentOperationRef.current
+      )
+        return
       const engine = engineRef.current
       if (!engine) return
       synchronizeActiveDesignPage(engine.snapshot())
@@ -3810,11 +3838,17 @@ export default function EditorApplication() {
         type: string,
         extension: string,
       ) => {
+        if (controller.signal.aborted) {
+          throw new DOMException('Export cancelled.', 'AbortError')
+        }
         const { downloadUrl } = await import('./lib/files')
         const bytes =
           data instanceof Uint8Array ? new Uint8Array(data).buffer : data
         const url = URL.createObjectURL(new Blob([bytes], { type }))
         try {
+          if (controller.signal.aborted) {
+            throw new DOMException('Export cancelled.', 'AbortError')
+          }
           downloadUrl(
             url,
             `${sanitizeFileStem(projectNameRef.current)}.${extension}`,
@@ -4079,15 +4113,15 @@ export default function EditorApplication() {
     setDragActive(false)
     const engine = engineRef.current
     const dropTarget = engine?.getCanvasDropTarget(event.nativeEvent)
-    const dragPayload = await import('./assets/dragPayload')
+    // The drag data store becomes protected as soon as this event dispatch
+    // returns, so copy every browser-owned value before the first await.
     const rawAssetPayload = event.dataTransfer.getData(
-      dragPayload.BUILTIN_ASSET_DRAG_MIME_TYPE,
+      BUILTIN_ASSET_DRAG_MIME_TYPE,
     )
+    const assetPayload = parseBuiltinAssetDragPayload(rawAssetPayload)
+    const file = event.dataTransfer.files[0]
     if (rawAssetPayload) {
-      const payload = dragPayload.readBuiltinAssetDragPayload(
-        event.dataTransfer,
-      )
-      if (!payload || !dropTarget) {
+      if (!assetPayload || !dropTarget) {
         setStatus({
           kind: 'error',
           message: designUi.status.assetDropFailed,
@@ -4102,7 +4136,7 @@ export default function EditorApplication() {
               import('./editor/designStudioAdapter'),
             ])
           const asset = await createBuiltinAssetRegistry().loadAsset(
-            payload.assetId,
+            assetPayload.assetId,
           )
           await activeEngine.runAtomic('asset', () =>
             insertLoadedAsset(activeEngine, asset, dropTarget.point),
@@ -4120,7 +4154,6 @@ export default function EditorApplication() {
       })
       return
     }
-    const file = event.dataTransfer.files[0]
     if (!file) return
     if (dropTarget?.gridCellId || dropTarget?.frameLayerId) {
       runEditorOperation(async (activeEngine) => {
@@ -5257,6 +5290,7 @@ export default function EditorApplication() {
                           className="layer-rename-input"
                           autoFocus
                           value={renameValue}
+                          maxLength={MAX_LAYER_NAME_LENGTH}
                           aria-label="レイヤー名"
                           onChange={(event) =>
                             setRenameValue(event.target.value)
@@ -6156,6 +6190,7 @@ export default function EditorApplication() {
               {studioTab === 'design' ? (
                 <DesignStudioPanel
                   locale={locale}
+                  busy={busy}
                   pages={designPages}
                   activePageId={activeDesignPageId}
                   selectedLayerIds={selectedIds}
@@ -6288,19 +6323,7 @@ export default function EditorApplication() {
                   onImportTemplate={importDesignTemplate}
                   onExportTemplate={exportDesignTemplate}
                   onSaveBrand={saveDesignBrand}
-                  savedBrands={savedBrandKits.map((kit) => ({
-                    id: kit.id,
-                    name: kit.name,
-                    colors: {
-                      primary: kit.palettes[0].colors.primary,
-                      secondary: kit.palettes[0].colors.secondary,
-                      accent: kit.palettes[0].colors.accent,
-                    },
-                    fonts: {
-                      heading: kit.fonts.heading,
-                      body: kit.fonts.body,
-                    },
-                  }))}
+                  savedBrands={designBrandSummaries}
                   activeBrandId={activeBrandKitId}
                   onSelectBrand={(brandId) =>
                     setActiveBrandKitId(brandId || undefined)

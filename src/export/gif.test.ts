@@ -15,26 +15,56 @@ const twoColorSlideshow = (): GifSlideshowInput => ({
 const readUint16 = (bytes: Uint8Array, offset: number): number =>
   bytes[offset] | (bytes[offset + 1] << 8)
 
-const decodeBaselineImageData = (
+const decodeImageData = (
   compressed: Uint8Array,
   minimumCodeSize: number,
 ): number[] => {
   const clearCode = 1 << minimumCodeSize
   const endCode = clearCode + 1
-  const codeSize = minimumCodeSize + 1
-  const codes: number[] = []
-  let bitBuffer = 0
-  let bitCount = 0
-  for (const byte of compressed) {
-    bitBuffer |= byte << bitCount
-    bitCount += 8
-    while (bitCount >= codeSize) {
-      codes.push(bitBuffer & ((1 << codeSize) - 1))
-      bitBuffer >>>= codeSize
-      bitCount -= codeSize
-    }
+  let codeSize = minimumCodeSize + 1
+  let nextCode = endCode + 1
+  let bitOffset = 0
+  let previous: number[] | undefined
+  let dictionary: Array<number[] | undefined> = []
+  const reset = (): void => {
+    dictionary = Array.from({ length: clearCode }, (_, index) => [index])
+    codeSize = minimumCodeSize + 1
+    nextCode = endCode + 1
+    previous = undefined
   }
-  return codes.filter((code) => code !== clearCode && code !== endCode)
+  const readCode = (): number | undefined => {
+    if (bitOffset + codeSize > compressed.byteLength * 8) return undefined
+    let code = 0
+    for (let bit = 0; bit < codeSize; bit += 1) {
+      const absolute = bitOffset + bit
+      code |= ((compressed[absolute >>> 3] >>> (absolute & 7)) & 1) << bit
+    }
+    bitOffset += codeSize
+    return code
+  }
+  reset()
+  const pixels: number[] = []
+  while (true) {
+    const code = readCode()
+    if (code === undefined) break
+    if (code === clearCode) {
+      reset()
+      continue
+    }
+    if (code === endCode) break
+    const entry =
+      dictionary[code] ??
+      (code === nextCode && previous ? [...previous, previous[0]] : undefined)
+    if (!entry) throw new Error(`Invalid GIF LZW code ${code}.`)
+    pixels.push(...entry)
+    if (previous && nextCode < 4_096) {
+      dictionary[nextCode] = [...previous, entry[0]]
+      nextCode += 1
+      if (nextCode === 1 << codeSize && codeSize < 12) codeSize += 1
+    }
+    previous = entry
+  }
+  return pixels
 }
 
 interface ParsedGifFrame {
@@ -75,7 +105,7 @@ const parseBaselineFrames = (bytes: Uint8Array): ParsedGifFrame[] => {
     offset += 1
     frames.push({
       delayHundredths,
-      pixels: decodeBaselineImageData(Uint8Array.from(blocks), minimumCodeSize),
+      pixels: decodeImageData(Uint8Array.from(blocks), minimumCodeSize),
     })
   }
   return frames
@@ -140,6 +170,23 @@ describe('GIF slideshow encoder', () => {
         yieldControl: () => Promise.resolve(),
       }),
     ).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('compresses repeated indexed pixels instead of clearing per pixel', async () => {
+    const bytes = await encodeGifSlideshow(
+      {
+        width: 10_000,
+        height: 1,
+        palette: new Uint8Array([0, 0, 0, 255, 255, 255]),
+        frames: [{ pixels: new Uint8Array(10_000), durationMs: 100 }],
+      },
+      { yieldControl: () => Promise.resolve() },
+    )
+
+    expect(bytes.byteLength).toBeLessThan(1_000)
+    expect(parseBaselineFrames(bytes)[0].pixels).toEqual([
+      ...new Uint8Array(10_000),
+    ])
   })
 
   it('rejects invalid palette indices and frame durations', async () => {

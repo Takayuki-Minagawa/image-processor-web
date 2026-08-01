@@ -119,40 +119,46 @@ export class DesignTemplateRegistry {
     const manifest = this.#manifests.get(packId)
     if (!manifest)
       return Promise.reject(new RangeError(`Unknown pack: ${packId}`))
-    const promise = manifest.load().then((pack) => {
-      if (
-        pack.schemaVersion !== DESIGN_TEMPLATE_PACK_SCHEMA_VERSION ||
-        pack.id !== manifest.id ||
-        pack.templates.length !== manifest.templateCount
-      ) {
-        throw new TypeError(`${manifest.id} does not match its manifest.`)
-      }
-      const parsed = new Map<string, ParsedDesignTemplate>()
-      for (const source of pack.templates) {
-        const result = parseDesignTemplate(source)
-        const entry = this.#entries.get(result.template.id)
+    const promise = manifest
+      .load()
+      .then((pack) => {
         if (
-          !entry ||
-          entry.packId !== pack.id ||
-          parsed.has(result.template.id)
+          pack.schemaVersion !== DESIGN_TEMPLATE_PACK_SCHEMA_VERSION ||
+          pack.id !== manifest.id ||
+          pack.templates.length !== manifest.templateCount
         ) {
-          throw new TypeError(
-            `${pack.id} contains an unknown or duplicate template.`,
-          )
+          throw new TypeError(`${manifest.id} does not match its manifest.`)
         }
-        if (
-          entry.width !== result.template.document.width ||
-          entry.height !== result.template.document.height ||
-          entry.pageCount !== result.template.document.pages.length
-        ) {
-          throw new TypeError(
-            `${entry.id} metadata does not match its template.`,
-          )
+        const parsed = new Map<string, ParsedDesignTemplate>()
+        for (const source of pack.templates) {
+          const result = parseDesignTemplate(source)
+          const entry = this.#entries.get(result.template.id)
+          if (
+            !entry ||
+            entry.packId !== pack.id ||
+            parsed.has(result.template.id)
+          ) {
+            throw new TypeError(
+              `${pack.id} contains an unknown or duplicate template.`,
+            )
+          }
+          if (
+            entry.width !== result.template.document.width ||
+            entry.height !== result.template.document.height ||
+            entry.pageCount !== result.template.document.pages.length
+          ) {
+            throw new TypeError(
+              `${entry.id} metadata does not match its template.`,
+            )
+          }
+          parsed.set(result.template.id, result)
         }
-        parsed.set(result.template.id, result)
-      }
-      return parsed
-    })
+        return parsed
+      })
+      .catch((error: unknown) => {
+        if (this.#packs.get(packId) === promise) this.#packs.delete(packId)
+        throw error
+      })
     this.#packs.set(packId, promise)
     return promise
   }

@@ -1,4 +1,9 @@
 import { parseBrandKit, type BrandKit } from './brandKit'
+import {
+  detectBrowserLockManager,
+  runWithOptionalBrowserLock,
+  type BrowserLockManagerLike,
+} from '../lib/browserLock'
 
 export const BRAND_KIT_REPOSITORY_SCHEMA_VERSION = 1 as const
 export const MAX_STORED_BRAND_KITS = 50
@@ -81,6 +86,8 @@ export interface BrowserBrandKitRepositoryOptions {
   getOpfsDirectory?: BrandKitOpfsDirectoryProvider | null
   /** `undefined` detects localStorage; `null` disables fallback storage. */
   storage?: BrandKitStorage | null
+  /** `undefined` detects Web Locks; `null` disables cross-tab locking. */
+  lockManager?: BrowserLockManagerLike | null
   now?: () => Date
 }
 
@@ -206,6 +213,8 @@ export class BrowserBrandKitRepository implements BrandKitRepository {
   readonly #getOpfsDirectory: BrandKitOpfsDirectoryProvider | null
   readonly #storage: BrandKitStorage | null
   readonly #now: () => Date
+  readonly #lockManager: BrowserLockManagerLike | null
+  readonly #lockName: string
   #queue: Promise<void> = Promise.resolve()
 
   constructor(options: BrowserBrandKitRepositoryOptions = {}) {
@@ -224,31 +233,42 @@ export class BrowserBrandKitRepository implements BrandKitRepository {
     this.#storage =
       options.storage === undefined ? defaultStorage() : options.storage
     this.#now = options.now ?? (() => new Date())
+    this.#lockManager =
+      options.lockManager === undefined
+        ? detectBrowserLockManager()
+        : options.lockManager
+    this.#lockName = `pixelweave:brand-kits:${this.#fileName}:write`
   }
 
   save(kit: BrandKit): Promise<BrandKitPersistenceBackend> {
     const normalized = parseBrandKit(kit)
-    return this.#enqueue(async () => {
-      const existing = (await this.#readNewest(true)) ?? this.#emptyCollection()
-      const kits = existing.kits.map(cloneKit)
-      const index = kits.findIndex(({ id }) => id === normalized.id)
-      if (index === -1) {
-        if (kits.length >= MAX_STORED_BRAND_KITS) {
-          throw new BrandKitRepositoryError(
-            'kit-limit',
-            `At most ${MAX_STORED_BRAND_KITS} brand kits may be stored.`,
-          )
+    return this.#enqueue(() =>
+      this.#withMutationLock(async () => {
+        const state = await this.#readMutationState()
+        const existing = state.collection ?? this.#emptyCollection()
+        const kits = existing.kits.map(cloneKit)
+        const index = kits.findIndex(({ id }) => id === normalized.id)
+        if (index === -1) {
+          if (kits.length >= MAX_STORED_BRAND_KITS) {
+            throw new BrandKitRepositoryError(
+              'kit-limit',
+              `At most ${MAX_STORED_BRAND_KITS} brand kits may be stored.`,
+            )
+          }
+          kits.push(normalized)
+        } else {
+          kits[index] = normalized
         }
-        kits.push(normalized)
-      } else {
-        kits[index] = normalized
-      }
-      return this.#persist({
-        schemaVersion: BRAND_KIT_REPOSITORY_SCHEMA_VERSION,
-        updatedAt: this.#timestamp(),
-        kits,
-      })
-    })
+        return this.#persist(
+          {
+            schemaVersion: BRAND_KIT_REPOSITORY_SCHEMA_VERSION,
+            updatedAt: this.#timestamp(),
+            kits,
+          },
+          state.canWriteOpfs,
+        )
+      }),
+    )
   }
 
   get(id: string): Promise<BrandKit | null> {
@@ -267,46 +287,54 @@ export class BrowserBrandKitRepository implements BrandKitRepository {
   }
 
   remove(id: string): Promise<boolean> {
-    return this.#enqueue(async () => {
-      const existing = await this.#readNewest()
-      if (!existing || !existing.kits.some((kit) => kit.id === id)) {
-        return false
-      }
-      await this.#persist({
-        schemaVersion: BRAND_KIT_REPOSITORY_SCHEMA_VERSION,
-        updatedAt: this.#timestamp(),
-        kits: existing.kits.filter((kit) => kit.id !== id),
-      })
-      return true
-    })
+    return this.#enqueue(() =>
+      this.#withMutationLock(async () => {
+        const state = await this.#readMutationState()
+        const existing = state.collection
+        if (!existing || !existing.kits.some((kit) => kit.id === id)) {
+          return false
+        }
+        await this.#persist(
+          {
+            schemaVersion: BRAND_KIT_REPOSITORY_SCHEMA_VERSION,
+            updatedAt: this.#timestamp(),
+            kits: existing.kits.filter((kit) => kit.id !== id),
+          },
+          state.canWriteOpfs,
+        )
+        return true
+      }),
+    )
   }
 
   clear(): Promise<void> {
-    return this.#enqueue(async () => {
-      const errors: unknown[] = []
-      if (this.#getOpfsDirectory) {
-        try {
-          const directory = await this.#getOpfsDirectory()
-          await directory.removeEntry(this.#fileName)
-        } catch (error) {
-          if (!isNotFoundError(error)) errors.push(error)
+    return this.#enqueue(() =>
+      this.#withMutationLock(async () => {
+        const errors: unknown[] = []
+        if (this.#getOpfsDirectory) {
+          try {
+            const directory = await this.#getOpfsDirectory()
+            await directory.removeEntry(this.#fileName)
+          } catch (error) {
+            if (!isNotFoundError(error)) errors.push(error)
+          }
         }
-      }
-      if (this.#storage) {
-        try {
-          this.#storage.removeItem(this.#storageKey)
-        } catch (error) {
-          errors.push(error)
+        if (this.#storage) {
+          try {
+            this.#storage.removeItem(this.#storageKey)
+          } catch (error) {
+            errors.push(error)
+          }
         }
-      }
-      if (errors.length > 0) {
-        throw new BrandKitRepositoryError(
-          'clear-failed',
-          'One or more brand kit stores could not be cleared.',
-          { cause: errors[0] },
-        )
-      }
-    })
+        if (errors.length > 0) {
+          throw new BrandKitRepositoryError(
+            'clear-failed',
+            'One or more brand kit stores could not be cleared.',
+            { cause: errors[0] },
+          )
+        }
+      }),
+    )
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -316,6 +344,14 @@ export class BrowserBrandKitRepository implements BrandKitRepository {
       () => undefined,
     )
     return result
+  }
+
+  #withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    return runWithOptionalBrowserLock(
+      this.#lockManager,
+      this.#lockName,
+      operation,
+    )
   }
 
   #timestamp(): string {
@@ -413,12 +449,52 @@ export class BrowserBrandKitRepository implements BrandKitRepository {
     return null
   }
 
+  async #readMutationState(): Promise<{
+    collection: StoredBrandKitCollection | null
+    canWriteOpfs: boolean
+  }> {
+    const [opfs, storage] = await Promise.all([
+      this.#readOpfs(),
+      Promise.resolve(this.#readStorage()),
+    ])
+    const collection =
+      opfs.collection && storage.collection
+        ? Date.parse(storage.collection.updatedAt) >
+          Date.parse(opfs.collection.updatedAt)
+          ? storage.collection
+          : opfs.collection
+        : (opfs.collection ?? storage.collection)
+    if (!collection && (opfs.invalid || storage.invalid)) {
+      throw new BrandKitRepositoryError(
+        'load-failed',
+        'Stored brand kits are invalid in every available backend.',
+        { cause: opfs.error ?? storage.error },
+      )
+    }
+    if (
+      !collection &&
+      this.#getOpfsDirectory !== null &&
+      opfs.error !== undefined
+    ) {
+      throw new BrandKitRepositoryError(
+        'load-failed',
+        'Existing brand kits could not be read safely before saving.',
+        { cause: opfs.error },
+      )
+    }
+    return {
+      collection,
+      canWriteOpfs: opfs.available && !opfs.invalid && opfs.error === undefined,
+    }
+  }
+
   async #persist(
     collection: StoredBrandKitCollection,
+    allowOpfs = true,
   ): Promise<BrandKitPersistenceBackend> {
     const source = serializeStoredBrandKitCollection(collection)
     let opfsError: unknown
-    if (this.#getOpfsDirectory) {
+    if (this.#getOpfsDirectory && allowOpfs) {
       try {
         const directory = await this.#getOpfsDirectory()
         const handle = await directory.getFileHandle(this.#fileName, {

@@ -73,4 +73,38 @@ describe('media export Worker client', () => {
     controller.abort()
     await expect(operation).rejects.toMatchObject({ name: 'AbortError' })
   })
+
+  it('keeps cancellation authoritative when a late result races it', async () => {
+    const worker = new FakeWorker()
+    worker.postMessage.mockImplementation((request) => {
+      if (request.type !== 'cancel') return
+      worker.dispatchEvent(
+        new MessageEvent('message', {
+          data: {
+            type: 'result',
+            jobId: request.jobId,
+            mimeType: 'image/gif',
+            data: new Uint8Array([71, 73, 70]),
+          },
+        }),
+      )
+    })
+    const controller = new AbortController()
+    const operation = runMediaExportJob(
+      {
+        kind: 'gif',
+        slideshow: {
+          width: 1,
+          height: 1,
+          palette: new Uint8Array([0, 0, 0, 255, 255, 255]),
+          frames: [{ pixels: new Uint8Array([0]), durationMs: 100 }],
+        },
+      },
+      { createWorker: () => worker, signal: controller.signal },
+    )
+
+    controller.abort()
+    await expect(operation).rejects.toMatchObject({ name: 'AbortError' })
+    expect(worker.terminate).toHaveBeenCalledOnce()
+  })
 })

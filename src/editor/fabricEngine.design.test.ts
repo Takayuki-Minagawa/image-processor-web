@@ -2,9 +2,16 @@ import { FabricImage, util, type FabricObject } from 'fabric'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FabricEditorEngine } from './fabricEngine'
 import { SelectionMask } from '../selection/mask'
-import { encodeSelectionMaskForProject } from '../selection/codec'
+import {
+  decodeSelectionMaskFromProject,
+  encodeSelectionMaskForProject,
+} from '../selection/codec'
 import { createProjectDocument } from './project'
-import type { JsonObject, ProjectLayerTree } from './types'
+import type {
+  EncodedSelectionMask,
+  JsonObject,
+  ProjectLayerTree,
+} from './types'
 
 const engines = new Set<FabricEditorEngine>()
 
@@ -548,6 +555,63 @@ describe('FabricEditorEngine design structure', () => {
     expect(object.left).toBeCloseTo(20)
     expect(object.top).toBeCloseTo(40)
     expect(object.getScaledWidth()).toBeCloseTo(80)
+  })
+
+  it('keeps absolute frames and layer-mask payloads aligned through resize and crop', () => {
+    const engine = createEngine()
+    const image = createImageLayer(engine)
+    const frame = engine.addEllipse({
+      name: 'Transform frame',
+      left: 8,
+      top: 12,
+      width: 64,
+      height: 48,
+    })
+    engine.selectLayer(image, true)
+    expect(engine.createClipFrame()).toBe(image)
+    setRectangularSelection(engine)
+    expect(engine.applySelectionAsLayerMask(image)).toBe(true)
+
+    const target = findObject(engine, image)
+    const frameBefore = target.clipPath!
+    const framePositionBefore = { left: frameBefore.left, top: frameBefore.top }
+    engine.magicResize(400, 300, 'top-left', 'fit')
+
+    const transformedFrame = target.clipPath!
+    expect(transformedFrame.left).toBeCloseTo(framePositionBefore.left * 2)
+    expect(transformedFrame.top).toBeCloseTo(framePositionBefore.top * 2)
+    expect(transformedFrame.scaleX).toBeCloseTo(2)
+    expect(transformedFrame.scaleY).toBeCloseTo(2)
+    let storedMask = decodeSelectionMaskFromProject(
+      target.editorLayerMask as EncodedSelectionMask,
+    )
+    expect([storedMask.width, storedMask.height]).toEqual([400, 300])
+    expect(transformedFrame.clipPath?.absolutePositioned).toBe(true)
+
+    const selectedBounds = target.getBoundingRect()
+    const cropLeft = Math.max(0, Math.floor(selectedBounds.left))
+    const cropTop = Math.max(0, Math.floor(selectedBounds.top))
+    const framePositionBeforeCrop = {
+      left: transformedFrame.left,
+      top: transformedFrame.top,
+    }
+    const cropped = engine.cropToSelection()
+    expect(cropped).not.toBeNull()
+    storedMask = decodeSelectionMaskFromProject(
+      target.editorLayerMask as EncodedSelectionMask,
+    )
+    expect([storedMask.width, storedMask.height]).toEqual([
+      cropped!.width,
+      cropped!.height,
+    ])
+    expect(target.clipPath?.left).toBeCloseTo(
+      framePositionBeforeCrop.left - cropLeft,
+    )
+    expect(target.clipPath?.top).toBeCloseTo(
+      framePositionBeforeCrop.top - cropTop,
+    )
+    expect(target.clipPath?.clipPath?.absolutePositioned).toBe(true)
+    expect(target.editorClipFrameId).toBe(frame)
   })
 
   it('adds vertical wrapped text, effects, and serializable backgrounds', () => {

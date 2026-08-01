@@ -48,6 +48,7 @@ import {
   type GridBoundary,
   type GridCellLayout,
 } from './gridLayout'
+import { MAX_LAYER_NAME_LENGTH, repairRendererLayerName } from './layerTree'
 import type {
   EncodedSelectionMask,
   ProjectClipReference,
@@ -850,6 +851,33 @@ const createEditorId = (): string => {
 const isAbortLikeError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError'
 
+interface DocumentSpaceTransform {
+  scaleX: number
+  scaleY: number
+  offsetX: number
+  offsetY: number
+  width: number
+  height: number
+}
+
+const transformDocumentMask = (
+  mask: SelectionMask,
+  transform: DocumentSpaceTransform,
+): SelectionMask => {
+  const source = mask.toBytes()
+  const output = new Uint8Array(transform.width * transform.height)
+  for (let y = 0; y < transform.height; y += 1) {
+    const sourceY = Math.floor((y - transform.offsetY) / transform.scaleY)
+    if (sourceY < 0 || sourceY >= mask.height) continue
+    for (let x = 0; x < transform.width; x += 1) {
+      const sourceX = Math.floor((x - transform.offsetX) / transform.scaleX)
+      if (sourceX < 0 || sourceX >= mask.width) continue
+      output[y * transform.width + x] = source[sourceY * mask.width + sourceX]
+    }
+  }
+  return SelectionMask.fromBytes(transform.width, transform.height, output)
+}
+
 /**
  * A React-independent adapter around Fabric.js.
  *
@@ -870,6 +898,7 @@ export class FabricEditorEngine {
   private eventSuppressionDepth = 0
   private transactionDepth = 0
   private transactionChanged = false
+  private atomicQueue: Promise<void> = Promise.resolve()
   private disposed = false
   private isPanning = false
   private lastPanPoint: Point | null = null
@@ -964,28 +993,33 @@ export class FabricEditorEngine {
     reason: EditorChangeReason,
     operation: () => T | Promise<T>,
   ): Promise<T> {
-    this.assertUsable()
-    if (this.transactionDepth > 0) {
-      return operation()
-    }
-    const before = this.snapshot()
-    this.transactionDepth = 1
-    this.transactionChanged = false
-    try {
-      const result = await operation()
-      const changed = this.transactionChanged
-      this.transactionDepth = 0
+    const execute = async (): Promise<T> => {
+      this.assertUsable()
+      const before = this.snapshot()
+      this.transactionDepth = 1
       this.transactionChanged = false
-      if (changed) {
-        this.finishMutation(reason)
+      try {
+        const result = await operation()
+        const changed = this.transactionChanged
+        this.transactionDepth = 0
+        this.transactionChanged = false
+        if (changed) {
+          this.finishMutation(reason)
+        }
+        return result
+      } catch (error) {
+        this.transactionDepth = 0
+        this.transactionChanged = false
+        await this.restore(before)
+        throw error
       }
-      return result
-    } catch (error) {
-      this.transactionDepth = 0
-      this.transactionChanged = false
-      await this.restore(before)
-      throw error
     }
+    const result = this.atomicQueue.then(execute, execute)
+    this.atomicQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
   }
 
   public getTool(): EditorTool {
@@ -2227,6 +2261,22 @@ export class FabricEditorEngine {
       .getObjects()
       .filter((object) => selectedSet.has(object))
     if (selected.length < 2) return null
+    const containsGridCell = (object: FabricObject): boolean =>
+      (object as EditorObject).editorKind === 'grid-cell' ||
+      (object instanceof Group && object.getObjects().some(containsGridCell))
+    const constructingGrid = selected.every(
+      (object) => (object as EditorObject).editorKind === 'grid-cell',
+    )
+    if (
+      !constructingGrid &&
+      selected.some(
+        (object) =>
+          (object as EditorObject).editorKind === 'grid-cell-image' ||
+          containsGridCell(object),
+      )
+    ) {
+      return null
+    }
 
     const group = new Group([], {
       ...TOP_LEFT_ORIGIN,
@@ -2657,12 +2707,12 @@ export class FabricEditorEngine {
 
   public renameLayer(id: string, name: string): boolean {
     const target = this.findLayer(id)
-    const trimmed = name.trim()
-    if (!target || !trimmed) {
+    const repaired = repairRendererLayerName(name, '')
+    if (!target || !repaired) {
       return false
     }
     this.mutate('layer', () => {
-      target.editorName = trimmed
+      target.editorName = repaired.slice(0, MAX_LAYER_NAME_LENGTH)
     })
     return true
   }
@@ -3415,6 +3465,21 @@ export class FabricEditorEngine {
         })
         object.setCoords()
       })
+      const transform: DocumentSpaceTransform = {
+        scaleX: appliedScaleX,
+        scaleY: appliedScaleY,
+        offsetX,
+        offsetY,
+        width: nextWidth,
+        height: nextHeight,
+      }
+      this.transformAbsoluteClipPaths(transform)
+      this.transformStoredLayerMasks((mask) =>
+        transformDocumentMask(mask, transform),
+      )
+      const transformedSelection = this.selectionMask
+        ? transformDocumentMask(this.selectionMask, transform)
+        : undefined
       this.documentWidth = nextWidth
       this.documentHeight = nextHeight
       this.editorState = normalizeEditorState(
@@ -3422,6 +3487,12 @@ export class FabricEditorEngine {
         nextWidth,
         nextHeight,
       )
+      if (transformedSelection) {
+        this.editorState = {
+          ...this.editorState,
+          selectionMask: encodeSelectionMaskForProject(transformedSelection),
+        }
+      }
       this.syncSelectionMask()
       this.setDocumentClip()
     })
@@ -3460,6 +3531,21 @@ export class FabricEditorEngine {
         })
         object.setCoords()
       })
+      const transform: DocumentSpaceTransform = {
+        scaleX: 1,
+        scaleY: 1,
+        offsetX: -left,
+        offsetY: -top,
+        width,
+        height,
+      }
+      this.transformAbsoluteClipPaths(transform)
+      this.transformStoredLayerMasks((mask) =>
+        transformDocumentMask(mask, transform),
+      )
+      const transformedSelection = this.selectionMask
+        ? transformDocumentMask(this.selectionMask, transform)
+        : undefined
       this.documentWidth = width
       this.documentHeight = height
       this.editorState = {
@@ -3476,6 +3562,12 @@ export class FabricEditorEngine {
                 (guide.axis === 'x' ? this.documentWidth : this.documentHeight),
           ),
         snapTolerance: this.editorState.snapTolerance,
+        ...(transformedSelection
+          ? {
+              selectionMask:
+                encodeSelectionMaskForProject(transformedSelection),
+            }
+          : {}),
       }
       this.syncSelectionMask()
       this.setDocumentClip()
@@ -4876,6 +4968,52 @@ export class FabricEditorEngine {
       candidate.editorKind === 'frame'
       ? candidate
       : undefined
+  }
+
+  private transformAbsoluteClipPaths(transform: DocumentSpaceTransform): void {
+    const visited = new Set<FabricObject>()
+    const visitClip = (clip: FabricObject): void => {
+      if (visited.has(clip)) return
+      visited.add(clip)
+      if (clip.absolutePositioned) {
+        clip.set({
+          left: clip.left * transform.scaleX + transform.offsetX,
+          top: clip.top * transform.scaleY + transform.offsetY,
+          scaleX: clip.scaleX * transform.scaleX,
+          scaleY: clip.scaleY * transform.scaleY,
+        })
+        clip.setCoords()
+      }
+      if (clip.clipPath) visitClip(clip.clipPath as FabricObject)
+    }
+    const visitObject = (object: FabricObject): void => {
+      if (object.clipPath) visitClip(object.clipPath as FabricObject)
+      if (object instanceof Group) object.getObjects().forEach(visitObject)
+    }
+    this.canvas.getObjects().forEach(visitObject)
+  }
+
+  private transformStoredLayerMasks(
+    transform: (mask: SelectionMask) => SelectionMask,
+  ): void {
+    const visit = (object: FabricObject): void => {
+      const target = object as EditorObject
+      if (target.editorLayerMask) {
+        const transformed = transform(
+          decodeSelectionMaskFromProject(target.editorLayerMask),
+        )
+        target.editorLayerMask = encodeSelectionMaskForProject(transformed)
+        const bounds = transformed.getNonEmptyBounds()
+        this.setLayerMaskClip(
+          target,
+          target.editorLayerMaskEnabled !== false && bounds
+            ? createSelectionMaskClip(transformed, bounds)
+            : undefined,
+        )
+      }
+      if (object instanceof Group) object.getObjects().forEach(visit)
+    }
+    this.canvas.getObjects().forEach(visit)
   }
 
   private createStoredLayerMaskClip(

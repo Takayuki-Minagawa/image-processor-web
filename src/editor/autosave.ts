@@ -5,6 +5,11 @@ import {
   validateProjectDocument,
 } from './project'
 import type { ProjectDocument } from './types'
+import {
+  detectBrowserLockManager,
+  runWithOptionalBrowserLock,
+  type BrowserLockManagerLike,
+} from '../lib/browserLock'
 
 export type AutosaveBackend = 'opfs' | 'localStorage'
 
@@ -74,6 +79,8 @@ export interface BrowserAutosaveRepositoryOptions {
   storage?: AutosaveStorage | null
   serialize?: (project: ProjectDocument) => string
   parse?: (source: string) => ProjectDocument
+  /** `undefined` detects Web Locks; `null` disables cross-tab locking. */
+  lockManager?: BrowserLockManagerLike | null
 }
 
 const defaultOpfsProvider = (): OpfsRootProvider | null => {
@@ -378,6 +385,8 @@ export class BrowserAutosaveRepository implements AutosaveRepository {
   readonly #serialize: (project: ProjectDocument) => string
   readonly #parse: (source: string) => ProjectDocument
   readonly #usesDefaultCodec: boolean
+  readonly #lockManager: BrowserLockManagerLike | null
+  readonly #lockName: string
   #pageFileSequence = 0
   #commitSequence = 0
 
@@ -395,9 +404,18 @@ export class BrowserAutosaveRepository implements AutosaveRepository {
     this.#parse = options.parse ?? parseProject
     this.#usesDefaultCodec =
       options.serialize === undefined && options.parse === undefined
+    this.#lockManager =
+      options.lockManager === undefined
+        ? detectBrowserLockManager()
+        : options.lockManager
+    this.#lockName = `pixelweave:autosave:${this.#fileName}:write`
   }
 
-  async save(project: ProjectDocument): Promise<AutosaveBackend> {
+  save(project: ProjectDocument): Promise<AutosaveBackend> {
+    return this.#withMutationLock(() => this.#saveUnlocked(project))
+  }
+
+  async #saveUnlocked(project: ProjectDocument): Promise<AutosaveBackend> {
     let opfsError: unknown
     let priorFallbackToken: string | undefined
     if (this.#storage !== null) {
@@ -553,7 +571,11 @@ export class BrowserAutosaveRepository implements AutosaveRepository {
     return null
   }
 
-  async clear(): Promise<void> {
+  clear(): Promise<void> {
+    return this.#withMutationLock(() => this.#clearUnlocked())
+  }
+
+  async #clearUnlocked(): Promise<void> {
     const errors: unknown[] = []
 
     if (this.#getOpfsRoot !== null) {
@@ -634,6 +656,14 @@ export class BrowserAutosaveRepository implements AutosaveRepository {
       randomId ??
       `${Date.now().toString(36)}-${(++this.#pageFileSequence).toString(36)}-${Math.random().toString(36).slice(2)}`
     return `${this.#pageFilePrefix}${encodeURIComponent(pageId)}.${token}.json`
+  }
+
+  #withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    return runWithOptionalBrowserLock(
+      this.#lockManager,
+      this.#lockName,
+      operation,
+    )
   }
 
   #nextCommitToken(): string {

@@ -1,5 +1,15 @@
-import type { ChartData, ChartSeries } from '../charts/model'
 import {
+  MAX_CHART_LABEL_LENGTH,
+  MAX_CHART_LABELS,
+  MAX_CHART_POINTS,
+  MAX_CHART_SERIES,
+  MAX_CHART_SERIES_ID_LENGTH,
+  MAX_CHART_SERIES_NAME_LENGTH,
+  type ChartData,
+  type ChartSeries,
+} from '../charts/model'
+import {
+  MAX_TABLE_CELL_TEXT_LENGTH,
   MAX_TABLE_CELLS,
   MAX_TABLE_COLUMNS,
   MAX_TABLE_ROWS,
@@ -207,36 +217,53 @@ export function parseDelimitedText(
 
 export const parseCsv = parseDelimitedText
 
-const escapeDelimitedField = (value: string, delimiter: Delimiter): string =>
-  value.includes(delimiter) || /["\r\n]/u.test(value)
-    ? `"${value.replaceAll('"', '""')}"`
-    : value
+const formulaLikeField = (value: string): boolean => {
+  const first = value.trimStart()[0]
+  return first === '=' || first === '+' || first === '-' || first === '@'
+}
+
+const escapeDelimitedField = (
+  value: string,
+  delimiter: Delimiter,
+  protectFormulas: boolean,
+): string => {
+  const inert = protectFormulas && formulaLikeField(value) ? `'${value}` : value
+  return inert.includes(delimiter) || /["\r\n]/u.test(inert)
+    ? `"${inert.replaceAll('"', '""')}"`
+    : inert
+}
 
 /** Serializes inert values for round-tripping through the CSV mini editor. */
 export function serializeDelimitedRows(
   rows: readonly (readonly string[])[],
   delimiter: Delimiter = ',',
+  options: { protectFormulas?: boolean } = {},
 ): string {
+  const protectFormulas = options.protectFormulas ?? true
   return rows
     .map((row) =>
       row
-        .map((value) => escapeDelimitedField(value, delimiter))
+        .map((value) => escapeDelimitedField(value, delimiter, protectFormulas))
         .join(delimiter),
     )
     .join('\n')
 }
 
 export const chartDataToDelimitedText = (data: ChartData): string =>
-  serializeDelimitedRows([
-    ['', ...data.series.map(({ name }) => name)],
-    ...data.labels.map((label, index) => [
-      label,
-      ...data.series.map(({ values }) => {
-        const value = values[index]
-        return value === null || value === undefined ? '' : String(value)
-      }),
-    ]),
-  ])
+  serializeDelimitedRows(
+    [
+      ['', ...data.series.map(({ name }) => name)],
+      ...data.labels.map((label, index) => [
+        label,
+        ...data.series.map(({ values }) => {
+          const value = values[index]
+          return value === null || value === undefined ? '' : String(value)
+        }),
+      ]),
+    ],
+    ',',
+    { protectFormulas: false },
+  )
 
 export const tableModelToDelimitedText = (table: TableModel): string =>
   serializeDelimitedRows(
@@ -260,6 +287,10 @@ export function delimitedTextToTable(
       MAX_TABLE_COLUMNS,
     ),
     maxCells: Math.min(options.maxCells ?? MAX_TABLE_CELLS, MAX_TABLE_CELLS),
+    maxFieldLength: Math.min(
+      options.maxFieldLength ?? MAX_TABLE_CELL_TEXT_LENGTH,
+      MAX_TABLE_CELL_TEXT_LENGTH,
+    ),
   })
   if (parsed.rows.length === 0 || parsed.rows[0].length === 0) {
     throw new TypeError('Delimited text does not contain table data.')
@@ -301,15 +332,39 @@ const seriesId = (name: string, index: number): string => {
     .toLocaleLowerCase()
     .replace(/[^a-z0-9]+/gu, '-')
     .replace(/^-+|-+$/gu, '')
-  return normalized ? `${normalized}-${index + 1}` : `series-${index + 1}`
+  const suffix = `-${index + 1}`
+  const bounded = normalized.slice(
+    0,
+    MAX_CHART_SERIES_ID_LENGTH - suffix.length,
+  )
+  return bounded ? `${bounded}${suffix}` : `series-${index + 1}`
 }
 
 export function delimitedTextToChartData(
   source: string,
   options: DelimitedTextOptions & { firstRowIsHeader?: boolean } = {},
 ): ChartDataImportResult {
-  const parsed = parseDelimitedText(source, options)
   const firstRowIsHeader = options.firstRowIsHeader ?? true
+  const parsed = parseDelimitedText(source, {
+    ...options,
+    maxRows: Math.min(
+      options.maxRows ?? MAX_CHART_LABELS + (firstRowIsHeader ? 1 : 0),
+      MAX_CHART_LABELS + (firstRowIsHeader ? 1 : 0),
+    ),
+    maxColumns: Math.min(
+      options.maxColumns ?? MAX_CHART_SERIES + 1,
+      MAX_CHART_SERIES + 1,
+    ),
+    maxCells: Math.min(
+      options.maxCells ??
+        MAX_CHART_POINTS + MAX_CHART_LABELS + MAX_CHART_SERIES + 1,
+      MAX_CHART_POINTS + MAX_CHART_LABELS + MAX_CHART_SERIES + 1,
+    ),
+    maxFieldLength: Math.min(
+      options.maxFieldLength ?? MAX_CHART_LABEL_LENGTH,
+      MAX_CHART_LABEL_LENGTH,
+    ),
+  })
   const firstDataRow = firstRowIsHeader ? 1 : 0
   if (parsed.rows.length <= firstDataRow || parsed.rows[0].length < 2) {
     throw new TypeError(
@@ -326,6 +381,11 @@ export function delimitedTextToChartData(
     const name = firstRowIsHeader
       ? parsed.rows[0][column].trim() || `Series ${column}`
       : `Series ${column}`
+    if (name.length > MAX_CHART_SERIES_NAME_LENGTH) {
+      throw new RangeError(
+        `A chart series name exceeds ${MAX_CHART_SERIES_NAME_LENGTH} characters.`,
+      )
+    }
     let id = seriesId(name, column - 1)
     while (usedIds.has(id)) id = `${id}-copy`
     usedIds.add(id)

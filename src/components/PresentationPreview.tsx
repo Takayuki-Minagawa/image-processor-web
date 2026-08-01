@@ -113,9 +113,27 @@ export default function PresentationPreview({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-      if (event.key === 'ArrowLeft') move(-1)
-      if (event.key === 'ArrowRight' || event.key === ' ') move(1)
+      if (event.defaultPrevented || event.repeat) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName))
+      ) {
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        move(-1)
+      }
+      if (event.key === 'ArrowRight' || event.key === ' ') {
+        event.preventDefault()
+        move(1)
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)

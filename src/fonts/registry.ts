@@ -215,6 +215,9 @@ export class FontRegistry {
     try {
       await chunk
     } catch {
+      if (this.#chunkPromises.get(id) === chunk) {
+        this.#chunkPromises.delete(id)
+      }
       failedRequests.push(...shorthands)
       return { id, available: false, requests: shorthands, failedRequests }
     }

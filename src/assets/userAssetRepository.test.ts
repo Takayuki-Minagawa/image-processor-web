@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { BrowserLockManagerLike } from '../lib/browserLock'
 import {
   MemoryBinaryDirectory,
   MemoryBinaryStorage,
@@ -26,6 +27,23 @@ const rasterInput = (
   bytes: png(),
   ...overrides,
 })
+
+class MemoryLockManager implements BrowserLockManagerLike {
+  readonly #queues = new Map<string, Promise<void>>()
+
+  request<T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> {
+    const prior = this.#queues.get(name) ?? Promise.resolve()
+    const result = prior.then(callback, callback)
+    this.#queues.set(
+      name,
+      Promise.resolve(result).then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return Promise.resolve(result)
+  }
+}
 
 describe('BrowserUserAssetRepository', () => {
   it('validates, hashes, stores, lists, reads, and removes raster bytes in OPFS', async () => {
@@ -134,6 +152,66 @@ describe('BrowserUserAssetRepository', () => {
         (await repository.get('write-fallback'))?.bytes ?? new ArrayBuffer(0),
       ),
     ).toEqual(png())
+  })
+
+  it('never replaces an unreadable OPFS index with an empty one', async () => {
+    const directory = new MemoryBinaryDirectory()
+    const storage = new MemoryBinaryStorage()
+    const first = new BrowserUserAssetRepository({
+      getOpfsDirectory: async () => directory,
+      storage,
+      lockManager: null,
+    })
+    await first.save(rasterInput({ id: 'existing-image' }))
+    const indexName = [...directory.files.keys()].find((name) =>
+      name.endsWith('index-v1.json'),
+    )!
+    const committedIndex = new TextDecoder().decode(
+      directory.files.get(indexName),
+    )
+
+    directory.failReads = true
+    const second = new BrowserUserAssetRepository({
+      getOpfsDirectory: async () => directory,
+      storage,
+      lockManager: null,
+    })
+    await expect(
+      second.save(rasterInput({ id: 'fallback-after-read-error' })),
+    ).resolves.toMatchObject({ backend: 'localStorage' })
+    expect(new TextDecoder().decode(directory.files.get(indexName))).toBe(
+      committedIndex,
+    )
+
+    directory.failReads = false
+    await expect(second.list()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'existing-image' }),
+        expect.objectContaining({ id: 'fallback-after-read-error' }),
+      ]),
+    )
+  })
+
+  it('serializes writes across repository instances with a shared browser lock', async () => {
+    const directory = new MemoryBinaryDirectory()
+    const lockManager = new MemoryLockManager()
+    const options = {
+      getOpfsDirectory: async () => directory,
+      storage: new MemoryBinaryStorage(),
+      lockManager,
+    }
+    const first = new BrowserUserAssetRepository(options)
+    const second = new BrowserUserAssetRepository(options)
+
+    await Promise.all([
+      first.save(rasterInput({ id: 'tab-one' })),
+      second.save(rasterInput({ id: 'tab-two' })),
+    ])
+
+    expect((await first.list()).map(({ id }) => id).sort()).toEqual([
+      'tab-one',
+      'tab-two',
+    ])
   })
 
   it('rejects invalid headers, dimension mismatches, media mismatches, and fallback overflow', async () => {

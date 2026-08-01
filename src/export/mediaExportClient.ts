@@ -42,7 +42,15 @@ export const runMediaExportJob = (
       action()
     }
     const onAbort = () => {
-      worker.postMessage({ type: 'cancel', jobId })
+      if (settled) return
+      settled = true
+      options.signal?.removeEventListener('abort', onAbort)
+      try {
+        worker.postMessage({ type: 'cancel', jobId })
+      } finally {
+        worker.terminate()
+        reject(new DOMException('Export cancelled.', 'AbortError'))
+      }
     }
     options.signal?.addEventListener('abort', onAbort, { once: true })
     worker.addEventListener('message', ((
@@ -68,7 +76,7 @@ export const runMediaExportJob = (
       finish(() => reject(event.error ?? new Error(event.message)))
     }) as EventListener)
     if (options.signal?.aborted) {
-      finish(() => reject(new DOMException('Export cancelled.', 'AbortError')))
+      onAbort()
       return
     }
     worker.postMessage({ type: 'run', jobId, job })

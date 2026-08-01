@@ -1,7 +1,7 @@
 import {
   getActiveProjectPage,
-  validateProjectDocument,
   validateProjectPage,
+  withActivePageAliases,
 } from './project'
 import type {
   JsonObject,
@@ -63,8 +63,13 @@ const createPageId = (): string => {
   return `page-${Date.now().toString(36)}-${fallbackPageCounter.toString(36)}`
 }
 
-const mutationTimestamp = (options: DocumentMutationOptions): string =>
-  options.updatedAt ?? new Date().toISOString()
+const mutationTimestamp = (options: DocumentMutationOptions): string => {
+  const timestamp = options.updatedAt ?? new Date().toISOString()
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw new RangeError('Document mutation timestamp must be valid.')
+  }
+  return timestamp
+}
 
 const nextPageName = (pages: readonly ProjectPage[]): string => {
   const names = new Set(pages.map(({ name }) => name))
@@ -99,7 +104,7 @@ const replaceDocumentPages = (
   activePageId: string,
   options: DocumentMutationOptions,
 ): ProjectDocument =>
-  validateProjectDocument({
+  withActivePageAliases({
     appId: project.appId,
     schemaVersion: project.schemaVersion,
     pages,

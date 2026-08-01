@@ -1,3 +1,9 @@
+import {
+  detectBrowserLockManager,
+  runWithOptionalBrowserLock,
+  type BrowserLockManagerLike,
+} from './browserLock'
+
 export const USER_BINARY_INDEX_SCHEMA_VERSION = 1 as const
 export const USER_BINARY_FALLBACK_SCHEMA_VERSION = 1 as const
 
@@ -78,6 +84,8 @@ export interface UserBinaryRepositoryOptions<M extends UserBinaryMetadataBase> {
   ): Error
   getOpfsDirectory: UserBinaryDirectoryProvider | null
   storage: UserBinaryStorage | null
+  /** `undefined` detects Web Locks; `null` disables cross-tab locking. */
+  lockManager?: BrowserLockManagerLike | null
 }
 
 interface OpfsState<M> {
@@ -190,11 +198,18 @@ export const createUserBinaryOpfsProvider = (
 export class BrowserUserBinaryRepository<M extends UserBinaryMetadataBase> {
   readonly #options: UserBinaryRepositoryOptions<M>
   readonly #indexFileName: string
+  readonly #lockManager: BrowserLockManagerLike | null
+  readonly #lockName: string
   #queue: Promise<void> = Promise.resolve()
 
   constructor(options: UserBinaryRepositoryOptions<M>) {
     this.#options = options
     this.#indexFileName = `${options.namespace}-index-v1.json`
+    this.#lockManager =
+      options.lockManager === undefined
+        ? detectBrowserLockManager()
+        : options.lockManager
+    this.#lockName = `pixelweave:${options.namespace}:write`
   }
 
   put(
@@ -205,53 +220,60 @@ export class BrowserUserBinaryRepository<M extends UserBinaryMetadataBase> {
     const bytes = stableBytes(input)
     return this.#enqueue(async () => {
       await this.#verify(parsed, bytes)
-      const state = await this.#readState()
-      const logical = this.#logicalMetadata(state.opfs, state.fallback)
-      const previous = logical.get(parsed.id)
-      const total =
-        [...logical.values()].reduce(
-          (sum, entry) => sum + entry.byteLength,
-          0,
-        ) -
-        (previous?.byteLength ?? 0) +
-        parsed.byteLength
-      if (
-        (previous === undefined && logical.size >= this.#options.maxEntries) ||
-        total > this.#options.maxTotalBytes
-      ) {
-        this.#fail(
-          'capacity-limit',
-          `Repository capacity is limited to ${this.#options.maxEntries} entries and ${this.#options.maxTotalBytes} bytes.`,
-        )
-      }
-
-      let opfsError: unknown
-      if (this.#options.getOpfsDirectory) {
-        try {
-          await this.#putOpfs(parsed, bytes, state)
-          this.#cleanupFallbackAfterOpfsPut(parsed.id, state.fallback)
-          return 'opfs'
-        } catch (error) {
-          opfsError = error
-        }
-      }
-      try {
-        this.#putFallback(parsed, bytes, state.fallback)
-        return 'localStorage'
-      } catch (error) {
+      return this.#withMutationLock(async () => {
+        const state = await this.#readState()
+        const logical = this.#logicalMetadata(state.opfs, state.fallback)
+        const previous = logical.get(parsed.id)
+        const total =
+          [...logical.values()].reduce(
+            (sum, entry) => sum + entry.byteLength,
+            0,
+          ) -
+          (previous?.byteLength ?? 0) +
+          parsed.byteLength
         if (
-          error instanceof Error &&
-          'code' in error &&
-          (error.code === 'fallback-limit' || error.code === 'unsupported')
+          (previous === undefined &&
+            logical.size >= this.#options.maxEntries) ||
+          total > this.#options.maxTotalBytes
         ) {
-          throw error
+          this.#fail(
+            'capacity-limit',
+            `Repository capacity is limited to ${this.#options.maxEntries} entries and ${this.#options.maxTotalBytes} bytes.`,
+          )
         }
-        this.#fail(
-          'save-failed',
-          'Binary data could not be saved to OPFS or bounded fallback storage.',
-          error ?? opfsError,
-        )
-      }
+
+        let opfsError: unknown = state.opfs.error
+        if (
+          this.#options.getOpfsDirectory &&
+          state.opfs.available &&
+          state.opfs.error === undefined
+        ) {
+          try {
+            await this.#putOpfs(parsed, bytes, state)
+            this.#cleanupFallbackAfterOpfsPut(parsed.id, state.fallback)
+            return 'opfs'
+          } catch (error) {
+            opfsError = error
+          }
+        }
+        try {
+          this.#putFallback(parsed, bytes, state.fallback)
+          return 'localStorage'
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            'code' in error &&
+            (error.code === 'fallback-limit' || error.code === 'unsupported')
+          ) {
+            throw error
+          }
+          this.#fail(
+            'save-failed',
+            'Binary data could not be saved to OPFS or bounded fallback storage.',
+            error ?? opfsError,
+          )
+        }
+      })
     })
   }
 
@@ -306,35 +328,41 @@ export class BrowserUserBinaryRepository<M extends UserBinaryMetadataBase> {
   }
 
   remove(id: string): Promise<boolean> {
-    return this.#enqueue(async () => {
-      const state = await this.#readState()
-      const logical = this.#logicalMetadata(state.opfs, state.fallback)
-      if (!logical.has(id)) return false
-      let opfsError: unknown
-      if (this.#options.getOpfsDirectory) {
+    return this.#enqueue(() =>
+      this.#withMutationLock(async () => {
+        const state = await this.#readState()
+        const logical = this.#logicalMetadata(state.opfs, state.fallback)
+        if (!logical.has(id)) return false
+        let opfsError: unknown = state.opfs.error
+        if (
+          this.#options.getOpfsDirectory &&
+          state.opfs.available &&
+          state.opfs.error === undefined
+        ) {
+          try {
+            await this.#removeOpfs(id, state)
+            state.fallback.entries.delete(id)
+            state.fallback.deletedIds.delete(id)
+            if (this.#options.storage) this.#persistFallback(state.fallback)
+            return true
+          } catch (error) {
+            opfsError = error
+          }
+        }
+        state.fallback.entries.delete(id)
+        state.fallback.deletedIds.add(id)
         try {
-          await this.#removeOpfs(id, state)
-          state.fallback.entries.delete(id)
-          state.fallback.deletedIds.delete(id)
-          if (this.#options.storage) this.#persistFallback(state.fallback)
+          this.#persistFallback(state.fallback)
           return true
         } catch (error) {
-          opfsError = error
+          this.#fail(
+            'save-failed',
+            `Deletion of ${id} could not be persisted.`,
+            error ?? opfsError,
+          )
         }
-      }
-      state.fallback.entries.delete(id)
-      state.fallback.deletedIds.add(id)
-      try {
-        this.#persistFallback(state.fallback)
-        return true
-      } catch (error) {
-        this.#fail(
-          'save-failed',
-          `Deletion of ${id} could not be persisted.`,
-          error ?? opfsError,
-        )
-      }
-    })
+      }),
+    )
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -344,6 +372,14 @@ export class BrowserUserBinaryRepository<M extends UserBinaryMetadataBase> {
       () => undefined,
     )
     return result
+  }
+
+  #withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    return runWithOptionalBrowserLock(
+      this.#lockManager,
+      this.#lockName,
+      operation,
+    )
   }
 
   #fail(

@@ -93,6 +93,7 @@ describe('editor automation adapter', () => {
     const context = {
       origin: 'replay' as const,
       resultAliases: new Map<string, unknown>(),
+      withinAtomicTransaction: true,
     }
 
     await engine.runAtomic('macro', () =>
@@ -128,6 +129,7 @@ describe('editor automation adapter', () => {
     const context = {
       origin: 'replay' as const,
       resultAliases: new Map<string, unknown>(),
+      withinAtomicTransaction: true,
     }
 
     await expect(

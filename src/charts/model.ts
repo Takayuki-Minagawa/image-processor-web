@@ -2,6 +2,9 @@ export const CHART_SCHEMA_VERSION = 1 as const
 export const MAX_CHART_LABELS = 1_000
 export const MAX_CHART_SERIES = 20
 export const MAX_CHART_POINTS = 10_000
+export const MAX_CHART_LABEL_LENGTH = 200
+export const MAX_CHART_SERIES_ID_LENGTH = 80
+export const MAX_CHART_SERIES_NAME_LENGTH = 120
 
 export type ChartType = 'bar' | 'horizontal-bar' | 'line' | 'pie' | 'doughnut'
 
@@ -100,7 +103,7 @@ const parseData = (value: unknown): ChartData => {
     return fail('$.data', `must contain at most ${MAX_CHART_POINTS} points`)
   }
   const labels = value.labels.map((label, index) =>
-    text(label, `$.data.labels[${index}]`, 200, true),
+    text(label, `$.data.labels[${index}]`, MAX_CHART_LABEL_LENGTH, true),
   )
   const ids = new Set<string>()
   const series = value.series.map((source, seriesIndex): ChartSeries => {
@@ -108,7 +111,7 @@ const parseData = (value: unknown): ChartData => {
     if (!isRecord(source) || !Array.isArray(source.values)) {
       return fail(path, 'must contain a values array')
     }
-    const id = text(source.id, `${path}.id`, 80)
+    const id = text(source.id, `${path}.id`, MAX_CHART_SERIES_ID_LENGTH)
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(id) || ids.has(id)) {
       return fail(`${path}.id`, 'must be a unique lowercase slug')
     }
@@ -132,7 +135,7 @@ const parseData = (value: unknown): ChartData => {
     })
     return {
       id,
-      name: text(source.name, `${path}.name`, 120),
+      name: text(source.name, `${path}.name`, MAX_CHART_SERIES_NAME_LENGTH),
       values,
       ...(source.color === undefined
         ? {}

@@ -8,6 +8,7 @@ import {
   type UserBinaryRepositoryErrorCode,
   type UserBinaryStorage,
 } from '../lib/userBinaryRepository'
+import type { BrowserLockManagerLike } from '../lib/browserLock'
 import {
   detectUserFontFormat,
   MAX_USER_FONT_BYTES,
@@ -78,6 +79,8 @@ export interface BrowserUserFontRepositoryOptions {
   getOpfsDirectory?: UserBinaryDirectoryProvider | null
   /** `undefined` detects localStorage; `null` disables fallback storage. */
   storage?: UserBinaryStorage | null
+  /** `undefined` detects Web Locks; `null` disables cross-tab locking. */
+  lockManager?: BrowserLockManagerLike | null
   now?: () => Date
   maxEntries?: number
   maxTotalBytes?: number
@@ -174,6 +177,7 @@ export class BrowserUserFontRepository implements UserFontRepository {
       makeError: fontError,
       getOpfsDirectory,
       storage,
+      lockManager: options.lockManager,
     })
   }
 

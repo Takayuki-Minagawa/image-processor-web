@@ -8,6 +8,7 @@ import {
   type UserBinaryRepositoryErrorCode,
   type UserBinaryStorage,
 } from '../lib/userBinaryRepository'
+import type { BrowserLockManagerLike } from '../lib/browserLock'
 import {
   IMAGE_HEADER_READ_BYTES,
   parseImageDimensions,
@@ -86,6 +87,8 @@ export interface BrowserUserAssetRepositoryOptions {
   getOpfsDirectory?: UserBinaryDirectoryProvider | null
   /** `undefined` detects localStorage; `null` disables fallback storage. */
   storage?: UserBinaryStorage | null
+  /** `undefined` detects Web Locks; `null` disables cross-tab locking. */
+  lockManager?: BrowserLockManagerLike | null
   now?: () => Date
   maxEntries?: number
   maxTotalBytes?: number
@@ -206,6 +209,7 @@ export class BrowserUserAssetRepository implements UserAssetRepository {
       makeError: assetError,
       getOpfsDirectory,
       storage,
+      lockManager: options.lockManager,
     })
   }
 

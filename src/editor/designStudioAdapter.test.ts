@@ -314,6 +314,12 @@ describe('design studio Fabric adapter', () => {
     expect(
       engine.getLayers().some(({ type }) => type === 'grid-cell-image'),
     ).toBe(false)
+
+    engine.selectLayer(groupId)
+    engine.selectLayer(overlayId, true)
+    expect(engine.groupSelection('Unsafe outer group')).toBeNull()
+    expect(engine.getCanvas().getObjects()).toContain(image)
+    expect(engine.getLayerTree().some(({ id }) => id === groupId)).toBe(true)
   })
 
   it('fills, replaces, follows, restores, and exports a dropped grid image', async () => {
@@ -445,6 +451,11 @@ describe('design studio Fabric adapter', () => {
     expect(engine.getLayers()).toHaveLength(result.addedLayerIds.length)
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect(onChanged).toHaveBeenLastCalledWith('template')
+    const textLayers = (
+      engine.snapshot().json.objects as Array<Record<string, unknown>>
+    ).filter(({ type }) => String(type).toLocaleLowerCase().includes('text'))
+    expect(textLayers.length).toBeGreaterThan(0)
+    expect(textLayers.every(({ scaleY }) => Number(scaleY) === 1)).toBe(true)
   })
 
   it('turns CSV data into safe chart and table SVG layers', async () => {

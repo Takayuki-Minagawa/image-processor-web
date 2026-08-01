@@ -113,6 +113,29 @@ describe('project schema', () => {
     )
   })
 
+  it('rejects hostile JSON nesting with the project error contract', () => {
+    const current = makeProject()
+    let nested: Record<string, unknown> = {}
+    for (let depth = 0; depth < 180; depth += 1) nested = { nested }
+    const source = JSON.stringify({
+      ...current,
+      pages: [
+        {
+          ...current.pages[0],
+          fabricCanvas: { ...current.fabricCanvas, nested },
+        },
+      ],
+    })
+
+    expect(() => parseProject(source)).toThrowError(
+      expect.objectContaining<ProjectFormatError>({
+        name: 'ProjectFormatError',
+        code: 'invalid-schema',
+        message: expect.stringContaining('nesting depth'),
+      }),
+    )
+  })
+
   it('rejects files produced by another application', () => {
     const value = { ...makeProject(), appId: 'another-editor' }
     expect(() => validateProjectDocument(value)).toThrowError(
@@ -194,6 +217,27 @@ describe('project schema', () => {
       snapTolerance: 5,
     })
     expect(migrated.editorState).toBe(migrated.pages[0].editorState)
+  })
+
+  it('repairs unsafe legacy layer names during migration', () => {
+    const current = makeProject()
+    const unsafeName = `${'x'.repeat(240)}\nlegacy`
+    const source = JSON.stringify({
+      appId: PROJECT_APP_ID,
+      schemaVersion: 2,
+      canvasSize: current.canvasSize,
+      fabricCanvas: {
+        objects: [{ type: 'Rect', editorId: 'legacy', editorName: unsafeName }],
+      },
+      editorState: { guides: [], snapTolerance: 8 },
+      metadata: current.metadata,
+      updatedAt: timestamp,
+    })
+
+    const migrated = parseProject(source)
+    expect(migrated.pages[0].layerTree[0].name).toHaveLength(200)
+    expect(migrated.pages[0].layerTree[0].name).not.toContain('\n')
+    expect(() => serializeProject(migrated)).not.toThrow()
   })
 
   it('serializes pages as the source of truth without duplicating active renderer data', () => {

@@ -202,7 +202,6 @@ export async function expandTemplatePage(
             left: element.x,
             top: element.y,
             width: element.width,
-            height: element.height,
             angle: element.rotation,
           })
           engine.setSelectedTextStyle({

@@ -90,16 +90,6 @@ const canvasToBlob = (
     ),
   )
 
-export const dataUrlToArrayBuffer = async (
-  dataUrl: string,
-  signal?: AbortSignal,
-): Promise<ArrayBuffer> => {
-  throwIfAborted(signal)
-  const response = await fetch(dataUrl, { signal })
-  if (!response.ok) throw new TypeError('The exported page data is invalid.')
-  return response.arrayBuffer()
-}
-
 export const calculateCropMarkSegments = (
   geometry: RasterPdfGeometry,
 ): CropMarkSegment[] => {

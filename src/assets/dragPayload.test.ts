@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_ASSET_DRAG_MIME_TYPE,
   encodeBuiltinAssetDragPayload,
+  parseBuiltinAssetDragPayload,
   readBuiltinAssetDragPayload,
   writeBuiltinAssetDragPayload,
 } from './dragPayload'
@@ -20,6 +21,15 @@ describe('built-in asset drag payload', () => {
       encodeBuiltinAssetDragPayload('grid-two-columns'),
     )
     expect(readBuiltinAssetDragPayload(transfer)).toEqual({
+      version: 1,
+      kind: 'builtin-asset',
+      assetId: 'grid-two-columns',
+    })
+    expect(
+      parseBuiltinAssetDragPayload(
+        values.get(BUILTIN_ASSET_DRAG_MIME_TYPE) ?? '',
+      ),
+    ).toEqual({
       version: 1,
       kind: 'builtin-asset',
       assetId: 'grid-two-columns',

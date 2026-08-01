@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { BrowserLockManagerLike } from '../lib/browserLock'
 import { parseBrandKit, type BrandKit } from './brandKit'
 import {
   BRAND_KIT_REPOSITORY_SCHEMA_VERSION,
@@ -63,6 +64,23 @@ const collection = (kits: BrandKit[], updatedAt: string): string =>
     updatedAt,
     kits,
   })
+
+class MemoryLockManager implements BrowserLockManagerLike {
+  readonly #queues = new Map<string, Promise<void>>()
+
+  request<T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> {
+    const prior = this.#queues.get(name) ?? Promise.resolve()
+    const result = prior.then(callback, callback)
+    this.#queues.set(
+      name,
+      Promise.resolve(result).then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return Promise.resolve(result)
+  }
+}
 
 const makeOpfs = (
   initial?: string,
@@ -151,7 +169,7 @@ describe('BrowserBrandKitRepository', () => {
     await expect(repository.list()).resolves.toEqual([kit()])
   })
 
-  it('falls back when an advertised OPFS directory is blocked', async () => {
+  it('fails closed when an advertised OPFS collection cannot be read', async () => {
     const storage = new MemoryStorage()
     const repository = new BrowserBrandKitRepository({
       getOpfsDirectory: async () => {
@@ -162,8 +180,10 @@ describe('BrowserBrandKitRepository', () => {
       now: () => new Date('2026-08-01T01:30:00.000Z'),
     })
 
-    await expect(repository.save(kit())).resolves.toBe('localStorage')
-    await expect(repository.list()).resolves.toEqual([kit()])
+    await expect(repository.save(kit())).rejects.toMatchObject({
+      code: 'load-failed',
+    })
+    expect(storage.getItem('brands')).toBeNull()
   })
 
   it('keeps a newer fallback authoritative after an OPFS write failure', async () => {
@@ -216,6 +236,26 @@ describe('BrowserBrandKitRepository', () => {
       'brand-one',
       'brand-two',
       'brand-three',
+    ])
+  })
+
+  it('serializes saves across repository instances with a shared browser lock', async () => {
+    const opfs = makeOpfs()
+    const lockManager = new MemoryLockManager()
+    const options = {
+      getOpfsDirectory: async () => opfs.directory,
+      storage: new MemoryStorage(),
+      lockManager,
+      now: () => new Date('2026-08-01T04:30:00.000Z'),
+    }
+    const first = new BrowserBrandKitRepository(options)
+    const second = new BrowserBrandKitRepository(options)
+
+    await Promise.all([first.save(kit('tab-one')), second.save(kit('tab-two'))])
+
+    expect((await first.list()).map(({ id }) => id)).toEqual([
+      'tab-one',
+      'tab-two',
     ])
   })
 

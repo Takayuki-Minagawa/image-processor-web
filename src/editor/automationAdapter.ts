@@ -103,6 +103,13 @@ export const executeEditorAutomationCommand = async (
   command: AutomationCommand | ResolvedAutomationCommand,
   context: CommandExecutionContext,
 ): Promise<CommandExecutionResult> => {
+  const runCompoundCommand = <T>(
+    operation: () => T | Promise<T>,
+  ): T | Promise<T> =>
+    context.withinAtomicTransaction
+      ? operation()
+      : engine.runAtomic('macro', operation)
+
   switch (command.type) {
     case 'resizeCanvas': {
       const width = resolvedNumber(command.width, 'width')
@@ -173,7 +180,7 @@ export const executeEditorAutomationCommand = async (
       return { result: id }
     }
     case 'addWatermark':
-      return engine.runAtomic('macro', () => {
+      return runCompoundCommand(() => {
         const { width, height } = engine.getDocumentSize()
         const fontSize =
           command.fontSize === undefined
@@ -234,6 +241,7 @@ export const executeEditorAutomationCommand = async (
       const result = await executeEditorScriptProgram(
         engine,
         parseEditorScript(command.source),
+        { withinAtomicTransaction: context.withinAtomicTransaction },
       )
       return { result }
     }

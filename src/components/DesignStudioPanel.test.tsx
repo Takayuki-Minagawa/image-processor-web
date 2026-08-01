@@ -26,6 +26,7 @@ const props = (
   overrides: Partial<DesignStudioPanelProps> = {},
 ): DesignStudioPanelProps => ({
   locale: 'en',
+  busy: false,
   pages: [
     {
       id: 'page-1',
@@ -437,6 +438,56 @@ describe('DesignStudioPanel', () => {
       expect(onSetFont).toHaveBeenCalledWith('Georgia, serif'),
     )
     expect(fontLoader).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps an in-progress brand edit across equivalent parent rerenders', async () => {
+    const user = userEvent.setup()
+    const savedBrand = {
+      id: 'brand-1',
+      name: 'Saved brand',
+      colors: {
+        primary: '#111111',
+        secondary: '#222222',
+        accent: '#333333',
+      },
+      fonts: {
+        heading: {
+          family: 'Bitter',
+          fallback: 'serif',
+          sourceId: 'bitter',
+        },
+        body: {
+          family: 'Inter',
+          fallback: 'sans-serif',
+          sourceId: 'inter',
+        },
+      },
+    }
+    const { rerender } = render(
+      <DesignStudioPanel
+        {...props({
+          activeBrandId: savedBrand.id,
+          savedBrands: [{ ...savedBrand }],
+        })}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Templates' }))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    await user.clear(name)
+    await user.type(name, 'Unsaved edit')
+
+    rerender(
+      <DesignStudioPanel
+        {...props({
+          activeBrandId: savedBrand.id,
+          savedBrands: [{ ...savedBrand }],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue(
+      'Unsaved edit',
+    )
   })
 
   it('preserves an OpenType extension when importing a discovered local font', async () => {

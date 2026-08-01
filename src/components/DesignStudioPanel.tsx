@@ -163,6 +163,7 @@ export interface DesignPageSizeRequest {
 
 export interface DesignStudioPanelProps {
   locale: AppLocale
+  busy: boolean
   pages: readonly DesignPageSummary[]
   activePageId: string
   selectedLayerIds: readonly string[]
@@ -264,6 +265,7 @@ const formatDesignTextList = (value: string, style: TextListStyle): string => {
 
 export default function DesignStudioPanel({
   locale,
+  busy,
   pages,
   activePageId,
   selectedLayerIds,
@@ -373,6 +375,7 @@ export default function DesignStudioPanel({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fontInputRef = useRef<HTMLInputElement>(null)
   const templateInputRef = useRef<HTMLInputElement>(null)
+  const hydratedBrandKeyRef = useRef<string | undefined>(undefined)
   const gridBoundaryDraftRef = useRef(new Map<string, number>())
   const [gridBoundaryDrafts, setGridBoundaryDrafts] = useState<
     Record<string, number>
@@ -408,6 +411,14 @@ export default function DesignStudioPanel({
 
   const activePage = pages.find(({ id }) => id === activePageId)
   const activeBrand = savedBrands.find(({ id }) => id === activeBrandId)
+  const activeBrandKey = activeBrand
+    ? JSON.stringify({
+        id: activeBrand.id,
+        name: activeBrand.name,
+        colors: activeBrand.colors,
+        fonts: activeBrand.fonts,
+      })
+    : ''
   const csvRows = useMemo(() => {
     try {
       return parseDelimitedText(csv).rows
@@ -482,6 +493,11 @@ export default function DesignStudioPanel({
 
   const addText = async () => {
     const formattedText = formatDesignTextList(text, textListStyle)
+    const safeFontSize = Math.min(
+      512,
+      Math.max(6, Number.isFinite(fontSize) ? fontSize : 64),
+    )
+    if (safeFontSize !== fontSize) setFontSize(safeFontSize)
     const brandFont =
       activeBrand && fontId === `brand:${activeBrand.id}:heading`
         ? activeBrand.fonts.heading
@@ -492,7 +508,7 @@ export default function DesignStudioPanel({
       onInsertText({
         text: formattedText,
         fontFamily: await resolveBrandFontFamily(brandFont, formattedText),
-        fontSize,
+        fontSize: safeFontSize,
         layoutMode: textLayout,
         vertical,
       })
@@ -503,7 +519,7 @@ export default function DesignStudioPanel({
       onInsertText({
         text: formattedText,
         fontFamily: `${userFont.family}, ${userFont.fallback}`,
-        fontSize,
+        fontSize: safeFontSize,
         layoutMode: textLayout,
         vertical,
       })
@@ -519,14 +535,19 @@ export default function DesignStudioPanel({
     onInsertText({
       text: formattedText,
       fontFamily: family,
-      fontSize,
+      fontSize: safeFontSize,
       layoutMode: textLayout,
       vertical,
     })
   }
 
   useEffect(() => {
-    if (!activeBrand) return
+    if (!activeBrand) {
+      hydratedBrandKeyRef.current = undefined
+      return
+    }
+    if (hydratedBrandKeyRef.current === activeBrandKey) return
+    hydratedBrandKeyRef.current = activeBrandKey
     setBrand((current) => ({
       ...current,
       name: activeBrand.name,
@@ -534,7 +555,16 @@ export default function DesignStudioPanel({
       headingFont: activeBrand.fonts.heading.sourceId ?? current.headingFont,
       bodyFont: activeBrand.fonts.body.sourceId ?? current.bodyFont,
     }))
-  }, [activeBrand])
+  }, [activeBrand, activeBrandKey])
+
+  useEffect(() => {
+    if (
+      fontId.startsWith('user:') &&
+      !userFonts.some(({ id }) => `user:${id}` === fontId)
+    ) {
+      setFontId('system-sans')
+    }
+  }, [fontId, userFonts])
 
   useEffect(() => {
     if (selectedData?.kind === 'chart') {
@@ -739,9 +769,14 @@ export default function DesignStudioPanel({
   const discoverLocalFonts = async () => {
     const queryLocalFonts = (window as WindowWithLocalFonts).queryLocalFonts
     if (!queryLocalFonts) return
-    const available = await queryLocalFonts.call(window)
-    setLocalFonts(available)
-    setLocalFontIndex(0)
+    try {
+      const available = await queryLocalFonts.call(window)
+      setLocalFonts(available)
+      setLocalFontIndex(0)
+    } catch {
+      setLocalFonts([])
+      setLocalFontIndex(0)
+    }
   }
 
   const importDiscoveredFont = async () => {
@@ -2064,19 +2099,32 @@ export default function DesignStudioPanel({
                 <button
                   type="button"
                   disabled={
+                    busy ||
                     Boolean(exportProgress) ||
                     (exportScope === 'selected' &&
                       selectedExportPageIds.length === 0)
                   }
                   onClick={() =>
-                    void onExport({
-                      format: exportFormat,
-                      scope: exportScope,
-                      selectedPageIds: selectedExportPageIds,
-                      dpi,
-                      bleedMm,
-                      cropMarks,
-                    })
+                    void (() => {
+                      const safeDpi = Math.min(
+                        600,
+                        Math.max(72, Number.isFinite(dpi) ? dpi : 300),
+                      )
+                      const safeBleed = Math.min(
+                        20,
+                        Math.max(0, Number.isFinite(bleedMm) ? bleedMm : 0),
+                      )
+                      setDpi(safeDpi)
+                      setBleedMm(safeBleed)
+                      return onExport({
+                        format: exportFormat,
+                        scope: exportScope,
+                        selectedPageIds: selectedExportPageIds,
+                        dpi: safeDpi,
+                        bleedMm: safeBleed,
+                        cropMarks: safeBleed > 0 && cropMarks,
+                      })
+                    })()
                   }
                 >
                   <Download aria-hidden="true" /> {copy.export.export}

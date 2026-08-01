@@ -40,8 +40,15 @@ export const writeBuiltinAssetDragPayload = (
 /** Rejects oversized, malformed, or surprising cross-document payloads. */
 export const readBuiltinAssetDragPayload = (
   dataTransfer: Pick<DataTransfer, 'getData'>,
+): BuiltinAssetDragPayload | undefined =>
+  parseBuiltinAssetDragPayload(
+    dataTransfer.getData(BUILTIN_ASSET_DRAG_MIME_TYPE),
+  )
+
+/** Parses a synchronously captured drop payload after the event has ended. */
+export const parseBuiltinAssetDragPayload = (
+  source: string,
 ): BuiltinAssetDragPayload | undefined => {
-  const source = dataTransfer.getData(BUILTIN_ASSET_DRAG_MIME_TYPE)
   if (
     source.length === 0 ||
     source.length > MAX_ASSET_DRAG_PAYLOAD_CHARACTERS

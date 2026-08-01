@@ -173,6 +173,28 @@ describe('project layer tree', () => {
     expect(renderer.objects).not.toBe(migrated.fabricCanvas.objects)
   })
 
+  it('repairs legacy renderer names without mutating the source payload', () => {
+    const unsafeName = `  ${'A'.repeat(230)}\nignored\t  `
+    const renderer: JsonObject = {
+      objects: [{ type: 'Rect', editorId: 'legacy', editorName: unsafeName }],
+    }
+
+    const migrated = deriveLayerTreeFromRenderer(renderer)
+    const migratedObject = (
+      migrated.fabricCanvas.objects as Array<Record<string, unknown>>
+    )[0]
+
+    expect(migrated.layerTree[0].name).toHaveLength(200)
+    expect(
+      [...migrated.layerTree[0].name].every((character) => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint > 0x1f && codePoint !== 0x7f
+      }),
+    ).toBe(true)
+    expect(migratedObject.editorName).toBe(migrated.layerTree[0].name)
+    expect((renderer.objects as JsonObject[])[0].editorName).toBe(unsafeName)
+  })
+
   it('derives nested groups, clip references, and lossless masks', () => {
     const payload = encodeSelectionMaskForProject(
       SelectionMask.fromBytes(2, 2, new Uint8Array([0, 64, 192, 255])),

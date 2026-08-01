@@ -173,6 +173,70 @@ test.describe('Canva parity design workflow', () => {
     await openEditor(page)
   })
 
+  test('素材カタログからCanvasへ実ブラウザのDnDで配置する', async ({
+    page,
+  }) => {
+    const dialog = await openDesignStudio(page)
+    const designPanel = dialog.getByRole('tabpanel', { name: 'デザイン' })
+    await designPanel
+      .getByRole('navigation', { name: 'デザイン機能' })
+      .getByRole('button', { name: '素材', exact: true })
+      .click()
+    const star = designPanel.getByRole('button', { name: /星/u }).first()
+    const viewport = page.locator('.canvas-viewport')
+    await expect(star).toBeVisible()
+    await expect(viewport).toBeVisible()
+
+    await star.evaluate((source) => {
+      type BrowserEvent = Parameters<typeof source.dispatchEvent>[0]
+      type BrowserDataTransfer = { clearData: () => void }
+      const browser = source.ownerDocument.defaultView as unknown as {
+        DataTransfer: new () => BrowserDataTransfer
+        DragEvent: new (
+          type: string,
+          init: Record<string, unknown>,
+        ) => BrowserEvent
+      }
+      const canvasViewport =
+        source.ownerDocument.querySelector('.canvas-viewport')
+      if (!canvasViewport) throw new Error('Canvas viewport was not found.')
+      const rect = canvasViewport.getBoundingClientRect()
+      const clientX = rect.left + rect.width / 2
+      const clientY = rect.top + rect.height / 2
+      const dropReceiver = source.ownerDocument.elementFromPoint(
+        clientX,
+        clientY,
+      )
+      if (!dropReceiver) throw new Error('Drop receiver was not found.')
+
+      const dataTransfer = new browser.DataTransfer()
+      source.dispatchEvent(
+        new browser.DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+        }),
+      )
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        dropReceiver.dispatchEvent(
+          new browser.DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY,
+            dataTransfer,
+          }),
+        )
+      }
+      // Emulate the browser protecting the drag data store immediately after
+      // the drop dispatch. The application must already have copied it.
+      dataTransfer.clearData()
+    })
+
+    await expect(page.locator('.layer-row')).toHaveCount(1)
+    await expect(page.locator('.layer-row')).toContainText('Star')
+  })
+
   test('検索した複数ページテンプレートを編集可能なデザインとして展開する', async ({
     page,
   }) => {

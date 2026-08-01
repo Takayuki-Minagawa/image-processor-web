@@ -2,6 +2,7 @@ export const TABLE_SCHEMA_VERSION = 1 as const
 export const MAX_TABLE_ROWS = 500
 export const MAX_TABLE_COLUMNS = 100
 export const MAX_TABLE_CELLS = 20_000
+export const MAX_TABLE_CELL_TEXT_LENGTH = 10_000
 
 export interface TableBorderStyle {
   color: string
@@ -120,8 +121,14 @@ const finite = (
 
 const parseCell = (value: unknown, path: string): TableCell => {
   if (!isRecord(value)) return fail(path, 'must be an object')
-  if (typeof value.text !== 'string' || value.text.length > 10_000) {
-    return fail(`${path}.text`, 'must contain at most 10000 characters')
+  if (
+    typeof value.text !== 'string' ||
+    value.text.length > MAX_TABLE_CELL_TEXT_LENGTH
+  ) {
+    return fail(
+      `${path}.text`,
+      `must contain at most ${MAX_TABLE_CELL_TEXT_LENGTH} characters`,
+    )
   }
   if (!['left', 'center', 'right'].includes(value.horizontalAlign as string)) {
     return fail(`${path}.horizontalAlign`, 'is invalid')

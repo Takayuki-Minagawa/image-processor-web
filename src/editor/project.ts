@@ -72,7 +72,18 @@ export interface CreateSinglePageProjectDocumentInput {
 }
 
 export interface CreateMultiPageProjectDocumentInput {
-  pages: ProjectPage[]
+  pages: Array<
+    Pick<
+      ProjectPage,
+      'id' | 'name' | 'canvasSize' | 'fabricCanvas' | 'editorState'
+    > &
+      Partial<
+        Pick<
+          ProjectPage,
+          'layerTree' | 'background' | 'physicalSize' | 'timeline' | 'thumbnail'
+        >
+      >
+  >
   activePageId?: string
   metadata?: JsonObject
   updatedAt?: string
@@ -91,6 +102,7 @@ const MAX_TIMELINE_DURATION_MS = 24 * 60 * 60 * 1_000
 const MAX_ANIMATIONS_PER_LAYER = 100
 const MAX_GRADIENT_STOPS = 32
 const MAX_PHYSICAL_PAGE_MILLIMETERS = 10_000
+const MAX_JSON_NESTING_DEPTH = 128
 const UNSAFE_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,7 +150,11 @@ function assertJsonValue(
   value: unknown,
   path: string,
   stack: WeakSet<object>,
+  depth = 0,
 ): asserts value is JsonValue {
+  if (depth > MAX_JSON_NESTING_DEPTH) {
+    invalidSchema(`${path} exceeds the maximum JSON nesting depth`)
+  }
   if (
     value === null ||
     typeof value === 'string' ||
@@ -166,14 +182,14 @@ function assertJsonValue(
 
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      assertJsonValue(item, `${path}[${index}]`, stack)
+      assertJsonValue(item, `${path}[${index}]`, stack, depth + 1)
     })
   } else {
     Object.entries(value).forEach(([key, item]) => {
       if (UNSAFE_JSON_KEYS.has(key)) {
         invalidSchema(`${path} contains the unsafe key "${key}"`)
       }
-      assertJsonValue(item, `${path}.${key}`, stack)
+      assertJsonValue(item, `${path}.${key}`, stack, depth + 1)
     })
   }
 
@@ -674,11 +690,10 @@ const normalizedLayerTree = (
   fabricCanvas: JsonObject,
   path: string,
 ): { fabricCanvas: JsonObject; layerTree: ProjectLayerTree } => {
-  if (value === undefined) {
-    return deriveLayerTreeFromRenderer(fabricCanvas)
-  }
   try {
-    return reconcileLayerTreeWithRenderer(fabricCanvas, value)
+    return value === undefined
+      ? deriveLayerTreeFromRenderer(fabricCanvas)
+      : reconcileLayerTreeWithRenderer(fabricCanvas, value)
   } catch (error) {
     if (error instanceof LayerTreeError) {
       invalidSchema(`${path} is invalid: ${error.message}`)
@@ -971,12 +986,11 @@ export const createProjectDocument = (
   const metadata = metadataForCreate(input.metadata ?? {}, now)
 
   if ('pages' in input) {
-    const pages = validatePages(input.pages)
     return validateProjectDocument({
       appId: PROJECT_APP_ID,
       schemaVersion: PROJECT_SCHEMA_VERSION,
-      pages,
-      activePageId: input.activePageId ?? pages[0].id,
+      pages: input.pages,
+      activePageId: input.activePageId ?? input.pages[0]?.id,
       metadata,
       updatedAt: now,
     })

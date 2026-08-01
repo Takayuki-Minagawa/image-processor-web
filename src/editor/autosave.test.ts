@@ -9,6 +9,7 @@ import {
 } from './autosave'
 import { createProjectDocument, serializeProject } from './project'
 import type { ProjectDocument } from './types'
+import type { BrowserLockManagerLike } from '../lib/browserLock'
 
 const timestamp = '2026-07-30T03:00:00.000Z'
 const defaultAutosaveFileName = 'autosave.image-processor-web.json'
@@ -63,6 +64,33 @@ class MemoryStorage implements AutosaveStorage {
 
   removeItem(key: string): void {
     this.values.delete(key)
+  }
+}
+
+class ObservedLockManager implements BrowserLockManagerLike {
+  readonly #queues = new Map<string, Promise<void>>()
+  active = 0
+  maximumActive = 0
+
+  request<T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> {
+    const prior = this.#queues.get(name) ?? Promise.resolve()
+    const result = prior.then(async () => {
+      this.active += 1
+      this.maximumActive = Math.max(this.maximumActive, this.active)
+      try {
+        return await callback()
+      } finally {
+        this.active -= 1
+      }
+    })
+    this.#queues.set(
+      name,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return result
   }
 }
 
@@ -170,6 +198,28 @@ describe('BrowserAutosaveRepository', () => {
     expect(writtenFileNames).toContain(secondPageFiles.get('page-2'))
     expect(opfs.fileNames()).not.toContain(firstPageFiles.get('page-2'))
     await expect(repository.load()).resolves.toEqual(changed)
+  })
+
+  it('serializes page-delta commits across repository instances', async () => {
+    const opfs = makeOpfs()
+    const lockManager = new ObservedLockManager()
+    const options = {
+      getOpfsRoot: async () => opfs.root,
+      storage: new MemoryStorage(),
+      lockManager,
+    }
+    const first = new BrowserAutosaveRepository(options)
+    const second = new BrowserAutosaveRepository(options)
+
+    await Promise.all([
+      first.save(multiPageProject([10, 20], '2026-08-01T00:00:00.000Z')),
+      second.save(multiPageProject([30, 40], '2026-08-01T00:00:01.000Z')),
+    ])
+
+    expect(lockManager.maximumActive).toBe(1)
+    await expect(first.load()).resolves.toEqual(
+      multiPageProject([30, 40], '2026-08-01T00:00:01.000Z'),
+    )
   })
 
   it('falls back to localStorage when OPFS is unavailable', async () => {

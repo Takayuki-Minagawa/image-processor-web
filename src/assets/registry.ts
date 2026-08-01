@@ -216,6 +216,12 @@ export class AssetRegistry {
     const promise = manifest
       .load()
       .then((pack) => this.#validatePack(pack, manifest))
+      .catch((error: unknown) => {
+        if (this.#packPromises.get(packId) === promise) {
+          this.#packPromises.delete(packId)
+        }
+        throw error
+      })
     this.#packPromises.set(packId, promise)
     return promise
   }

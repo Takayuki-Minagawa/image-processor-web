@@ -77,6 +77,35 @@ const normalizedName = (value: unknown, fallback: string): string => {
   return name
 }
 
+/**
+ * Renderer payloads from older releases did not constrain layer names. Keep
+ * the strict canonical-tree validator above, but repair legacy renderer data
+ * when deriving a tree so one malformed display label cannot make the whole
+ * document impossible to save or reopen.
+ */
+export const repairRendererLayerName = (
+  value: unknown,
+  fallback: string,
+): string => {
+  const withoutControls =
+    typeof value === 'string'
+      ? [...value]
+          .filter((character) => {
+            const codePoint = character.codePointAt(0) ?? 0
+            return codePoint > 0x1f && codePoint !== 0x7f
+          })
+          .join('')
+          .trim()
+      : ''
+  const candidate = withoutControls || fallback
+  let repaired = ''
+  for (const character of candidate) {
+    if (repaired.length + character.length > MAX_LAYER_NAME_LENGTH) break
+    repaired += character
+  }
+  return repaired || fallback.slice(0, MAX_LAYER_NAME_LENGTH)
+}
+
 const normalizedOpacity = (value: unknown, fallback = 1): number => {
   const opacity = value === undefined ? fallback : value
   if (!finiteNumber(opacity) || opacity < 0 || opacity > 1) {
@@ -660,16 +689,22 @@ export const deriveLayerTreeFromRenderer = (
   const used = new Set<string>()
   let sequence = 0
 
-  const baseNode = (record: Record<string, unknown>, id: string) => ({
-    id,
-    name: normalizedName(record.editorName, `Layer ${sequence}`),
-    visible: record.visible !== false,
-    locked: record.editorLocked === true,
-    opacity:
-      finiteNumber(record.opacity) && record.opacity >= 0 && record.opacity <= 1
-        ? record.opacity
-        : 1,
-  })
+  const baseNode = (record: Record<string, unknown>, id: string) => {
+    const name = repairRendererLayerName(record.editorName, `Layer ${sequence}`)
+    record.editorName = name
+    return {
+      id,
+      name,
+      visible: record.visible !== false,
+      locked: record.editorLocked === true,
+      opacity:
+        finiteNumber(record.opacity) &&
+        record.opacity >= 0 &&
+        record.opacity <= 1
+          ? record.opacity
+          : 1,
+    }
+  }
 
   const normalizeClipFrame = (
     value: unknown,

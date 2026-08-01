@@ -107,6 +107,22 @@ describe('FontRegistry', () => {
     })
   })
 
+  it('retries a deferred font chunk after a transient rejection', async () => {
+    const chunkLoader = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('stale chunk'))
+      .mockResolvedValue(undefined)
+    const registry = new FontRegistry([registration({}, chunkLoader)])
+
+    await expect(registry.ensureLoaded('test-sans')).resolves.toMatchObject({
+      available: false,
+    })
+    await expect(registry.ensureLoaded('test-sans')).resolves.toMatchObject({
+      available: true,
+    })
+    expect(chunkLoader).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects duplicate, malformed, and unknown registrations', async () => {
     expect(() => new FontRegistry([registration(), registration()])).toThrow(
       expect.objectContaining({ code: 'duplicate-font' }),

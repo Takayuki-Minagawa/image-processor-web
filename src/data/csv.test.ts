@@ -20,6 +20,9 @@ describe('parseDelimitedText', () => {
     expect(chartDataToDelimitedText(chart)).toBe(',Sales\nJan,10')
     const table = delimitedTextToTable('Name,Value\nA,1').table
     expect(tableModelToDelimitedText(table)).toBe('Name,Value\nA,1')
+    expect(
+      serializeDelimitedRows([['=SUM(A1:A2)', '+cmd', '-2', '@link']]),
+    ).toBe("'=SUM(A1:A2),'+cmd,'-2,'@link")
   })
 
   it('detects CSV/TSV and handles escaped quotes, CRLF, and quoted newlines', () => {
@@ -68,6 +71,19 @@ describe('CSV data conversion', () => {
       background: '#f3f4f6',
     })
     expect(result.table.rows[1].cells[1].text).toBe('12')
+  })
+
+  it('applies table and chart string limits before model construction', () => {
+    expect(() => delimitedTextToTable(`A\n${'x'.repeat(10_001)}`)).toThrow(
+      /10000/u,
+    )
+    expect(() =>
+      delimitedTextToChartData(`Label,${'S'.repeat(121)}\nA,1`),
+    ).toThrow(/120/u)
+    const chart = delimitedTextToChartData(
+      `Label,${'abcdefghij'.repeat(10)}\nA,1`,
+    )
+    expect(chart.data.series[0].id.length).toBeLessThanOrEqual(80)
   })
 
   it('maps the first column to labels and reports non-numeric chart values', () => {
