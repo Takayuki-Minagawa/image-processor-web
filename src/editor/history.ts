@@ -154,6 +154,20 @@ export class History<T> {
     return true
   }
 
+  /**
+   * Replaces the current snapshot without creating an undo step.
+   *
+   * This is useful for navigation-only state such as the active page: the
+   * document payload stays unchanged, but the next edit must undo on the page
+   * where it was made. Existing redo entries are intentionally preserved.
+   */
+  replaceCurrent(snapshot: T): boolean {
+    if (this.#cursor < 0) return this.push(snapshot)
+    if (this.#equals(this.#entries[this.#cursor], snapshot)) return false
+    this.#entries[this.#cursor] = snapshot
+    return true
+  }
+
   undo(): T | undefined {
     if (!this.canUndo) {
       return undefined

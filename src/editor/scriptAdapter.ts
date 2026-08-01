@@ -831,26 +831,30 @@ const restoreSelection = (
 export const executeEditorScriptProgram = async (
   engine: FabricEditorEngine,
   program: EditorScriptProgram,
+  options: { withinAtomicTransaction?: boolean } = {},
 ): Promise<EditorScriptExecutionResult> => {
   const validated = validateProgram(program)
   const selectedBefore = engine.getSelectedLayerIds()
-  try {
-    return await engine.runAtomic('script', () => {
-      const state: ExecutionState = {
-        executedCommands: 0,
-        affectedLayerIds: new Set(),
-        addedLayerIds: [],
-        bindings: new Map(),
-      }
-      validated.commands.forEach((command, index) => {
-        executeCommand(engine, command, `program.commands[${index}]`, state)
-      })
-      return {
-        executedCommands: state.executedCommands,
-        affectedLayerIds: [...state.affectedLayerIds],
-        addedLayerIds: [...state.addedLayerIds],
-      }
+  const execute = (): EditorScriptExecutionResult => {
+    const state: ExecutionState = {
+      executedCommands: 0,
+      affectedLayerIds: new Set(),
+      addedLayerIds: [],
+      bindings: new Map(),
+    }
+    validated.commands.forEach((command, index) => {
+      executeCommand(engine, command, `program.commands[${index}]`, state)
     })
+    return {
+      executedCommands: state.executedCommands,
+      affectedLayerIds: [...state.affectedLayerIds],
+      addedLayerIds: [...state.addedLayerIds],
+    }
+  }
+  try {
+    return options.withinAtomicTransaction
+      ? execute()
+      : await engine.runAtomic('script', execute)
   } catch (error) {
     restoreSelection(engine, selectedBefore)
     throw error

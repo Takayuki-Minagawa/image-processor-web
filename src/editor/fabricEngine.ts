@@ -6,12 +6,14 @@ import {
   FabricImage,
   FabricObject,
   Gradient,
+  Group,
   IText,
   Path,
   PencilBrush,
   Point,
   Rect,
   Shadow,
+  Textbox,
   filters,
   iMatrix,
   loadSVGFromString,
@@ -30,6 +32,9 @@ import {
   inspectEmbeddedImageDataUrl,
 } from './snapshotValidation'
 import type { LogoVariation } from '../logo/generator'
+import type { EvaluatedElementState } from '../animation/timeline'
+import type { ChartModel } from '../charts'
+import type { TableModel } from '../tables'
 import { SelectionMask, type SelectionMaskBounds } from '../selection/mask'
 import { createSelectionMaskClip } from '../selection/fabricMaskClip'
 import {
@@ -37,10 +42,19 @@ import {
   encodeSelectionMaskForProject,
 } from '../selection/codec'
 import { type FilterOperation, type PixelBuffer } from './filters/types'
+import {
+  gridBoundaries,
+  moveGridBoundary,
+  type GridBoundary,
+  type GridCellLayout,
+} from './gridLayout'
+import { MAX_LAYER_NAME_LENGTH, repairRendererLayerName } from './layerTree'
 import type {
   EncodedSelectionMask,
+  ProjectClipReference,
   ProjectEditorState,
   ProjectGuide,
+  ProjectLayerMask,
 } from './types'
 
 export type EditorTool = 'select' | 'brush' | 'eraser' | 'pan'
@@ -72,8 +86,21 @@ export type EditorChangeReason =
   | 'macro'
   | 'script'
   | 'background-removal'
+  | 'group'
+  | 'clip'
+  | 'layer-mask'
+  | 'magic-resize'
+  | 'background'
+  | 'asset'
+  | 'template'
+  | 'chart'
+  | 'table'
 
 export type ExportImageFormat = 'png' | 'jpeg' | 'webp'
+
+export interface ExportDataUrlOptions {
+  exactSafeMultiplier?: boolean
+}
 
 export interface EditorStatus {
   message: string
@@ -89,6 +116,34 @@ export interface LayerInfo {
   opacity: number
   blend: GlobalCompositeOperation
   selected: boolean
+}
+
+export interface LayerTreeInfo extends LayerInfo {
+  parentId?: string
+  depth: number
+  hasChildren: boolean
+  clipped: boolean
+  masked: boolean
+}
+
+export interface ChartLayerData {
+  layerId: string
+  model: ChartModel
+  palette: string[]
+}
+
+export interface TableLayerData {
+  layerId: string
+  model: TableModel
+}
+
+export interface UpdateChartLayerOptions {
+  id?: string
+  palette?: readonly string[]
+}
+
+export interface UpdateTableLayerOptions {
+  id?: string
 }
 
 export interface EditorSnapshot {
@@ -221,7 +276,37 @@ export interface AddTextOptions {
   fontSize?: number
   fontWeight?: string | number
   name?: string
+  width?: number
+  layoutMode?: TextLayoutMode
+  vertical?: boolean
 }
+
+export type TextLayoutMode = 'auto' | 'wrap' | 'fixed'
+export type TextEffectPreset =
+  'none' | 'neon' | 'splice' | 'background' | 'echo'
+
+export type ResizeAnchor =
+  | 'top-left'
+  | 'top'
+  | 'top-right'
+  | 'left'
+  | 'center'
+  | 'right'
+  | 'bottom-left'
+  | 'bottom'
+  | 'bottom-right'
+
+export type MagicResizeMode = 'fit' | 'fill' | 'stretch'
+
+export type DesignShapeKind =
+  | 'rounded-rectangle'
+  | 'triangle'
+  | 'pentagon'
+  | 'star'
+  | 'arrow'
+  | 'line'
+  | 'speech-bubble'
+  | 'arch'
 
 export interface FabricEditorCallbacks {
   /**
@@ -254,14 +339,49 @@ export interface ImportImageOptions {
   resizeCanvasIfEmpty?: boolean
 }
 
+export interface CanvasDropTarget {
+  point: { x: number; y: number }
+  gridCellId?: string
+  frameLayerId?: string
+}
+
+export interface GridBoundaryInfo extends GridBoundary {
+  groupId: string
+}
+
 type EditorObject = FabricObject & {
   editorId?: string
   editorName?: string
   editorLocked?: boolean
-  editorKind?: 'svg' | 'adjustment' | 'logo' | 'pixel-delete'
+  editorKind?:
+    | 'svg'
+    | 'adjustment'
+    | 'logo'
+    | 'pixel-delete'
+    | 'group'
+    | 'frame'
+    | 'grid-cell'
+    | 'grid-cell-image'
+    | 'chart'
+    | 'table'
   editorFilterSettings?: Record<string, unknown>
   editorFilterOperations?: FilterOperation[]
   editorTemplateId?: string
+  editorLayerType?: string
+  editorGridCellId?: string
+  editorClipFrameId?: string
+  editorClipSettings?: Omit<ProjectClipReference, 'frameLayerId'>
+  editorLayerMask?: EncodedSelectionMask
+  editorLayerMaskEnabled?: boolean
+  editorLayerMaskSettings?: Pick<
+    ProjectLayerMask,
+    'inverted' | 'opacity' | 'offsetX' | 'offsetY'
+  >
+  editorTextLayoutMode?: TextLayoutMode
+  editorVerticalText?: boolean
+  editorChartModel?: ChartModel
+  editorChartPalette?: string[]
+  editorTableModel?: TableModel
 }
 
 type ClipboardObject = EditorObject
@@ -285,6 +405,16 @@ interface PreparedRestoreApplicationOptions {
   viewportTransform?: Canvas['viewportTransform']
 }
 
+interface ResolvedGridGroupLayout {
+  group: EditorObject & Group
+  cells: Map<string, EditorObject & Rect>
+  layout: GridCellLayout[]
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 const SERIALIZED_EDITOR_PROPERTIES = [
   'editorId',
   'editorName',
@@ -293,6 +423,18 @@ const SERIALIZED_EDITOR_PROPERTIES = [
   'editorFilterSettings',
   'editorFilterOperations',
   'editorTemplateId',
+  'editorLayerType',
+  'editorGridCellId',
+  'editorClipFrameId',
+  'editorClipSettings',
+  'editorLayerMask',
+  'editorLayerMaskEnabled',
+  'editorLayerMaskSettings',
+  'editorTextLayoutMode',
+  'editorVerticalText',
+  'editorChartModel',
+  'editorChartPalette',
+  'editorTableModel',
 ] as const
 
 const MIN_DOCUMENT_SIZE = 1
@@ -396,6 +538,36 @@ const escapeXmlAttribute = (value: string): string =>
     .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
+
+const MAX_CHART_PALETTE_COLORS = 64
+const HEX_COLOR = /^#[0-9a-f]{6}$/iu
+
+const normalizeChartPalette = (palette: readonly string[]): string[] => {
+  if (palette.length > MAX_CHART_PALETTE_COLORS) {
+    throw new RangeError(
+      `Chart palettes may contain at most ${MAX_CHART_PALETTE_COLORS} colors.`,
+    )
+  }
+  return palette.map((entry, index) => {
+    if (!HEX_COLOR.test(entry)) {
+      throw new TypeError(
+        `Chart palette color ${index + 1} must be a six-digit hex color.`,
+      )
+    }
+    return entry.toLowerCase()
+  })
+}
+
+const parseChartPalette = (value: unknown, path: string): string[] => {
+  if (value === undefined) return []
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== 'string')
+  ) {
+    throw new TypeError(`${path} must be an array of hex colors.`)
+  }
+  return normalizeChartPalette(value as string[])
+}
 
 const normalizeFilterSettings = (
   settings: ImageFilterSettings,
@@ -679,6 +851,33 @@ const createEditorId = (): string => {
 const isAbortLikeError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError'
 
+interface DocumentSpaceTransform {
+  scaleX: number
+  scaleY: number
+  offsetX: number
+  offsetY: number
+  width: number
+  height: number
+}
+
+const transformDocumentMask = (
+  mask: SelectionMask,
+  transform: DocumentSpaceTransform,
+): SelectionMask => {
+  const source = mask.toBytes()
+  const output = new Uint8Array(transform.width * transform.height)
+  for (let y = 0; y < transform.height; y += 1) {
+    const sourceY = Math.floor((y - transform.offsetY) / transform.scaleY)
+    if (sourceY < 0 || sourceY >= mask.height) continue
+    for (let x = 0; x < transform.width; x += 1) {
+      const sourceX = Math.floor((x - transform.offsetX) / transform.scaleX)
+      if (sourceX < 0 || sourceX >= mask.width) continue
+      output[y * transform.width + x] = source[sourceY * mask.width + sourceX]
+    }
+  }
+  return SelectionMask.fromBytes(transform.width, transform.height, output)
+}
+
 /**
  * A React-independent adapter around Fabric.js.
  *
@@ -699,10 +898,12 @@ export class FabricEditorEngine {
   private eventSuppressionDepth = 0
   private transactionDepth = 0
   private transactionChanged = false
+  private atomicQueue: Promise<void> = Promise.resolve()
   private disposed = false
   private isPanning = false
   private lastPanPoint: Point | null = null
   private clipboard: ClipboardObject[] = []
+  private clipboardPrimaryCount = 0
   private pasteGeneration = 0
   private editorState: ProjectEditorState
   private selectionMask: SelectionMask | undefined
@@ -792,28 +993,37 @@ export class FabricEditorEngine {
     reason: EditorChangeReason,
     operation: () => T | Promise<T>,
   ): Promise<T> {
-    this.assertUsable()
     if (this.transactionDepth > 0) {
+      this.assertUsable()
       return operation()
     }
-    const before = this.snapshot()
-    this.transactionDepth = 1
-    this.transactionChanged = false
-    try {
-      const result = await operation()
-      const changed = this.transactionChanged
-      this.transactionDepth = 0
+    const execute = async (): Promise<T> => {
+      this.assertUsable()
+      const before = this.snapshot()
+      this.transactionDepth = 1
       this.transactionChanged = false
-      if (changed) {
-        this.finishMutation(reason)
+      try {
+        const result = await operation()
+        const changed = this.transactionChanged
+        this.transactionDepth = 0
+        this.transactionChanged = false
+        if (changed) {
+          this.finishMutation(reason)
+        }
+        return result
+      } catch (error) {
+        this.transactionDepth = 0
+        this.transactionChanged = false
+        await this.restore(before)
+        throw error
       }
-      return result
-    } catch (error) {
-      this.transactionDepth = 0
-      this.transactionChanged = false
-      await this.restore(before)
-      throw error
     }
+    const result = this.atomicQueue.then(execute, execute)
+    this.atomicQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
   }
 
   public getTool(): EditorTool {
@@ -1002,11 +1212,176 @@ export class FabricEditorEngine {
     }
   }
 
+  /** Inserts a validated semantic chart and its editable source model. */
+  public async insertChartModel(
+    model: ChartModel,
+    palette: readonly string[] = [],
+    name = 'Chart',
+  ): Promise<string> {
+    this.assertUsable()
+    const [charts, { sanitizeSvg }] = await Promise.all([
+      import('../charts'),
+      import('../lib/svgSafety'),
+    ])
+    const normalized = charts.parseChartModel(model)
+    const normalizedPalette = normalizeChartPalette(palette)
+    const scene = charts.buildChartVectorScene(normalized, {
+      width: 800,
+      height: 520,
+      palette: normalizedPalette,
+    })
+    const source = sanitizeSvg(charts.chartVectorSceneToSvg(scene)).source
+
+    return this.runAtomic('chart', async () => {
+      const id = await this.importSvg(source, name)
+      const target = this.findLayer(id)
+      if (!target) throw new Error('The inserted chart layer is unavailable.')
+      this.mutate('chart', () => {
+        target.editorKind = 'chart'
+        target.editorChartModel = structuredClone(normalized)
+        target.editorChartPalette = [...normalizedPalette]
+        target.editorTableModel = undefined
+      })
+      return id
+    })
+  }
+
+  /** Inserts a validated semantic table and its editable source model. */
+  public async insertTableModel(
+    model: TableModel,
+    name = 'Table',
+  ): Promise<string> {
+    this.assertUsable()
+    const [tables, { sanitizeSvg }] = await Promise.all([
+      import('../tables'),
+      import('../lib/svgSafety'),
+    ])
+    const normalized = tables.parseTableModel(model)
+    const source = sanitizeSvg(tables.tableModelToSvg(normalized)).source
+
+    return this.runAtomic('table', async () => {
+      const id = await this.importSvg(source, name)
+      const target = this.findLayer(id)
+      if (!target) throw new Error('The inserted table layer is unavailable.')
+      this.mutate('table', () => {
+        target.editorKind = 'table'
+        target.editorTableModel = structuredClone(normalized)
+        target.editorChartModel = undefined
+        target.editorChartPalette = undefined
+      })
+      return id
+    })
+  }
+
+  /** Returns an immutable copy of a selected or id-addressed chart model. */
+  public getChartLayer(id?: string): ChartLayerData | null {
+    this.assertUsable()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    if (!target?.editorChartModel) return null
+    return {
+      layerId: this.requireEditorId(target),
+      model: structuredClone(target.editorChartModel),
+      palette: [...(target.editorChartPalette ?? [])],
+    }
+  }
+
+  /** Returns an immutable copy of a selected or id-addressed table model. */
+  public getTableLayer(id?: string): TableLayerData | null {
+    this.assertUsable()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    if (!target?.editorTableModel) return null
+    return {
+      layerId: this.requireEditorId(target),
+      model: structuredClone(target.editorTableModel),
+    }
+  }
+
+  /** Regenerates a chart layer while preserving its editor-layer identity. */
+  public async updateChartLayer(
+    model: ChartModel,
+    options: UpdateChartLayerOptions = {},
+  ): Promise<boolean> {
+    this.assertUsable()
+    const current = this.getChartLayer(options.id)
+    if (!current) return false
+    const [charts, { sanitizeSvg }] = await Promise.all([
+      import('../charts'),
+      import('../lib/svgSafety'),
+    ])
+    const normalized = charts.parseChartModel(model)
+    const normalizedPalette = normalizeChartPalette(
+      options.palette ?? current.palette,
+    )
+    const scene = charts.buildChartVectorScene(normalized, {
+      width: 800,
+      height: 520,
+      palette: normalizedPalette,
+    })
+    const source = sanitizeSvg(charts.chartVectorSceneToSvg(scene)).source
+    return this.replaceSemanticSvgLayer(
+      current.layerId,
+      source,
+      'chart',
+      (replacement) => {
+        replacement.editorChartModel = structuredClone(normalized)
+        replacement.editorChartPalette = [...normalizedPalette]
+        replacement.editorTableModel = undefined
+      },
+    )
+  }
+
+  /** Regenerates a table layer while preserving its editor-layer identity. */
+  public async updateTableLayer(
+    model: TableModel,
+    options: UpdateTableLayerOptions = {},
+  ): Promise<boolean> {
+    this.assertUsable()
+    const current = this.getTableLayer(options.id)
+    if (!current) return false
+    const [tables, { sanitizeSvg }] = await Promise.all([
+      import('../tables'),
+      import('../lib/svgSafety'),
+    ])
+    const normalized = tables.parseTableModel(model)
+    const source = sanitizeSvg(tables.tableModelToSvg(normalized)).source
+    return this.replaceSemanticSvgLayer(
+      current.layerId,
+      source,
+      'table',
+      (replacement) => {
+        replacement.editorTableModel = structuredClone(normalized)
+        replacement.editorChartModel = undefined
+        replacement.editorChartPalette = undefined
+      },
+    )
+  }
+
   public async exportSvg(
     scope: 'document' | 'selection' = 'document',
   ): Promise<string> {
     await this.waitForAdjustmentLayers()
     if (scope === 'document') {
+      if (
+        this.canvas.getObjects().some((object) => this.hasNestedClip(object))
+      ) {
+        const dataUrl = await this.exportDataUrl('png', 1, 1)
+        return this.createRasterSvg(
+          dataUrl,
+          0,
+          0,
+          this.documentWidth,
+          this.documentHeight,
+          'Pixelweave document',
+        )
+      }
       return this.canvas.toSVG({
         width: `${this.documentWidth}`,
         height: `${this.documentHeight}`,
@@ -1031,6 +1406,25 @@ export class FabricEditorEngine {
     const label = escapeXmlAttribute(
       this.requireEditorName(this.normalizeEditorObject(object)),
     )
+    if (this.hasNestedClip(object)) {
+      const source = this.createIsolatedLayerCanvas(object)
+      const output = document.createElement('canvas')
+      output.width = width
+      output.height = height
+      const context = output.getContext('2d')
+      if (!context) {
+        throw new Error('SVGラスターフォールバックを作成できませんでした。')
+      }
+      context.drawImage(source, left, top, width, height, 0, 0, width, height)
+      return this.createRasterSvg(
+        output.toDataURL('image/png'),
+        left,
+        top,
+        width,
+        height,
+        label,
+      )
+    }
     return [
       '<?xml version="1.0" encoding="UTF-8"?>',
       `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="${left} ${top} ${width} ${height}" role="img" aria-label="${label}">`,
@@ -1063,6 +1457,226 @@ export class FabricEditorEngine {
     return this.requireEditorId(rect)
   }
 
+  /** Marks a rectangular layer as a drop target before it is nested in a grid. */
+  public markLayerAsGridCell(id: string): boolean {
+    this.assertUsable()
+    const target = this.findLayer(id)
+    if (!(target instanceof Rect)) return false
+    const editorTarget = target as EditorObject & Rect
+    this.mutate('asset', () => {
+      editorTarget.editorKind = 'grid-cell'
+      editorTarget.editorGridCellId = id
+    })
+    return true
+  }
+
+  /** Returns draggable internal dividers for the selected grid/group/cell. */
+  public getSelectedGridBoundaries(): GridBoundaryInfo[] {
+    this.assertUsable()
+    const resolved = this.selectedGridGroupLayout()
+    if (!resolved) return []
+    const groupId = this.requireEditorId(resolved.group)
+    return gridBoundaries(resolved.layout).map((boundary) => ({
+      ...boundary,
+      groupId,
+    }))
+  }
+
+  /** Commits one bounded grid divider drag as one undoable editor mutation. */
+  public moveSelectedGridBoundary(
+    boundaryId: string,
+    position: number,
+  ): boolean {
+    this.assertUsable()
+    const resolved = this.selectedGridGroupLayout()
+    if (!resolved || !Number.isFinite(position)) return false
+    const boundary = gridBoundaries(resolved.layout).find(
+      ({ id }) => id === boundaryId,
+    )
+    if (!boundary) return false
+    const boundedPosition = clamp(position, boundary.minimum, boundary.maximum)
+    if (Math.abs(boundedPosition - boundary.position) < EPSILON) return false
+    const next = moveGridBoundary(resolved.layout, boundaryId, boundedPosition)
+
+    this.mutate('asset', () => {
+      next.forEach((layout) => {
+        const cell = resolved.cells.get(layout.id)
+        if (!cell) return
+        cell.set({
+          ...TOP_LEFT_ORIGIN,
+          left: resolved.left + layout.x * resolved.width,
+          top: resolved.top + layout.y * resolved.height,
+          width: layout.width * resolved.width,
+          height: layout.height * resolved.height,
+          scaleX: 1,
+          scaleY: 1,
+          dirty: true,
+        })
+        cell.setCoords()
+      })
+      resolved.group.triggerLayout()
+      resolved.group.setCoords()
+    })
+    return true
+  }
+
+  /** Marks a catalog frame so an image can be dropped into it. */
+  public markLayerAsDropFrame(id: string): boolean {
+    this.assertUsable()
+    const target = this.findLayer(id)
+    if (!target || target instanceof FabricImage) return false
+    this.mutate('asset', () => {
+      target.editorKind = 'frame'
+    })
+    return true
+  }
+
+  /**
+   * Covers a grid cell with a decoded raster and retains a serializable clip.
+   * Image header validation remains the caller's file-boundary responsibility;
+   * importImage performs the second decoded-dimension safety check.
+   */
+  public async fillGridCell(
+    cellId: string,
+    dataUrl: string,
+    name = 'Grid image',
+  ): Promise<string> {
+    this.assertUsable()
+    const cell = this.findLayer(cellId)
+    if (
+      !(cell instanceof Rect) ||
+      (cell as EditorObject).editorKind !== 'grid-cell' ||
+      (cell as EditorObject).editorGridCellId !== cellId
+    ) {
+      throw new RangeError('The requested grid cell does not exist.')
+    }
+    const editorCell = cell as EditorObject & Rect
+    const bounds = editorCell.getBoundingRect()
+    if (
+      ![bounds.left, bounds.top, bounds.width, bounds.height].every(
+        Number.isFinite,
+      ) ||
+      bounds.width <= 0 ||
+      bounds.height <= 0
+    ) {
+      throw new RangeError('The requested grid cell has invalid bounds.')
+    }
+
+    const removedContents: FabricObject[] = []
+    const imageId = await this.runAtomic('asset', async () => {
+      const imageId = await this.importImage(dataUrl, name)
+      const image = this.findLayer(imageId)
+      if (!(image instanceof FabricImage)) {
+        throw new TypeError('The decoded grid content is not an image.')
+      }
+      const editorImage = image as EditorObject & FabricImage
+      const frame = new Rect({
+        ...TOP_LEFT_ORIGIN,
+        left: 0,
+        top: 0,
+        width: Math.max(1, editorCell.width),
+        height: Math.max(1, editorCell.height),
+        fill: '#000000',
+        strokeWidth: 0,
+        absolutePositioned: true,
+        selectable: false,
+        evented: false,
+      }) as EditorObject
+      frame.editorKind = 'frame'
+      this.initializeEditorObject(
+        frame,
+        this.uniqueLayerName(`${this.requireEditorName(editorCell)} frame`),
+      )
+      const priorContents = this.canvas.getObjects().filter((object) => {
+        const candidate = object as EditorObject
+        return (
+          candidate !== image &&
+          candidate.editorKind === 'grid-cell-image' &&
+          candidate.editorGridCellId === cellId
+        )
+      })
+
+      this.mutate('asset', () => {
+        if (priorContents.length > 0) {
+          this.canvas.remove(...priorContents)
+          removedContents.push(...priorContents)
+        }
+        editorImage.editorKind = 'grid-cell-image'
+        editorImage.editorGridCellId = cellId
+        editorImage.editorClipFrameId = this.requireEditorId(frame)
+        editorImage.set({
+          clipPath: frame,
+          dirty: true,
+        })
+        this.syncGridCellContent(editorImage, editorCell)
+        this.canvas.setActiveObject(editorImage)
+      })
+      return imageId
+    })
+    this.disposeResources(removedContents, this.canvasOwnedResources())
+    return imageId
+  }
+
+  /** Fills a catalog frame through the same clipping operation as the UI. */
+  public async fillDropFrame(
+    frameId: string,
+    dataUrl: string,
+    name = 'Frame image',
+  ): Promise<string> {
+    this.assertUsable()
+    const frame = this.findLayer(frameId)
+    if (
+      !frame ||
+      frame instanceof FabricImage ||
+      (frame as EditorObject).editorKind !== 'frame'
+    ) {
+      throw new RangeError('The requested frame does not exist.')
+    }
+    const editorFrame = frame as EditorObject
+    const bounds = editorFrame.getBoundingRect()
+    if (
+      ![bounds.left, bounds.top, bounds.width, bounds.height].every(
+        Number.isFinite,
+      ) ||
+      bounds.width <= 0 ||
+      bounds.height <= 0
+    ) {
+      throw new RangeError('The requested frame has invalid bounds.')
+    }
+
+    return this.runAtomic('asset', async () => {
+      const imageId = await this.importImage(dataUrl, name)
+      const image = this.findLayer(imageId)
+      if (!(image instanceof FabricImage)) {
+        throw new TypeError('The decoded frame content is not an image.')
+      }
+      const editorImage = image as EditorObject & FabricImage
+      const sourceWidth = Math.max(1, editorImage.width)
+      const sourceHeight = Math.max(1, editorImage.height)
+      const scale = Math.max(
+        bounds.width / sourceWidth,
+        bounds.height / sourceHeight,
+      )
+      this.mutate('asset', () => {
+        editorImage.set({
+          ...TOP_LEFT_ORIGIN,
+          left: bounds.left + (bounds.width - sourceWidth * scale) / 2,
+          top: bounds.top + (bounds.height - sourceHeight * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+          dirty: true,
+        })
+        editorImage.setCoords()
+        this.canvas.discardActiveObject()
+        this.activateObjects([editorFrame, editorImage])
+      })
+      if (this.createClipFrame() !== imageId) {
+        throw new Error('The frame could not be applied to the dropped image.')
+      }
+      return imageId
+    })
+  }
+
   public addEllipse(options: AddShapeOptions = {}): string {
     this.assertUsable()
     const width = Math.max(1, finiteOr(options.width, 220))
@@ -1085,10 +1699,62 @@ export class FabricEditorEngine {
     return this.requireEditorId(ellipse)
   }
 
+  public addDesignShape(
+    kind: DesignShapeKind,
+    options: AddShapeOptions = {},
+  ): string {
+    if (kind === 'rounded-rectangle') {
+      return this.addRect({
+        ...options,
+        name: options.name ?? 'Rounded rectangle',
+      })
+    }
+    const definitions: Record<
+      Exclude<DesignShapeKind, 'rounded-rectangle'>,
+      string
+    > = {
+      triangle: 'M 100 0 L 200 180 L 0 180 Z',
+      pentagon: 'M 100 0 L 195 69 L 159 180 L 41 180 L 5 69 Z',
+      star: 'M 100 0 L 124 62 L 190 65 L 139 107 L 156 172 L 100 136 L 44 172 L 61 107 L 10 65 L 76 62 Z',
+      arrow: 'M 0 55 L 125 55 L 125 20 L 200 90 L 125 160 L 125 125 L 0 125 Z',
+      line: 'M 0 90 L 200 90',
+      'speech-bubble':
+        'M 18 10 H 182 Q 195 10 195 24 V 126 Q 195 140 182 140 H 78 L 34 178 L 45 140 H 18 Q 5 140 5 126 V 24 Q 5 10 18 10 Z',
+      arch: 'M 0 180 V 100 C 0 45 45 0 100 0 C 155 0 200 45 200 100 V 180 Z',
+    }
+    const width = Math.max(1, finiteOr(options.width, 220))
+    const height = Math.max(1, finiteOr(options.height, 180))
+    const lineOnly = kind === 'line'
+    const path = new Path(definitions[kind], {
+      ...TOP_LEFT_ORIGIN,
+      left: finiteOr(options.left, (this.documentWidth - width) / 2),
+      top: finiteOr(options.top, (this.documentHeight - height) / 2),
+      fill: lineOnly ? 'transparent' : (options.fill ?? '#7c3aed'),
+      stroke:
+        options.stroke ??
+        (lineOnly ? (options.fill ?? '#7c3aed') : 'transparent'),
+      strokeWidth: Math.max(0, finiteOr(options.strokeWidth, lineOnly ? 8 : 0)),
+      strokeLineCap: 'round',
+      strokeLineJoin: 'round',
+    }) as EditorObject
+    path.set({
+      scaleX: width / Math.max(1, path.width),
+      scaleY: height / Math.max(1, path.height),
+    })
+    this.initializeEditorObject(
+      path,
+      this.uniqueLayerName(options.name?.trim() || kind),
+    )
+    this.addAndSelect(path)
+    return this.requireEditorId(path)
+  }
+
   public addText(text = 'Text', options: AddTextOptions = {}): string {
     this.assertUsable()
-    const value = text.length > 0 ? text : 'Text'
-    const textObject = new IText(value, {
+    const source = text.length > 0 ? text : 'Text'
+    const value = options.vertical ? [...source].join('\n') : source
+    const layoutMode = options.layoutMode ?? 'auto'
+    const textOptions = {
       ...TOP_LEFT_ORIGIN,
       left: finiteOr(options.left, this.documentWidth / 2 - 80),
       top: finiteOr(options.top, this.documentHeight / 2 - 24),
@@ -1096,13 +1762,99 @@ export class FabricEditorEngine {
       fontFamily: options.fontFamily ?? 'system-ui, sans-serif',
       fontSize: clamp(finiteOr(options.fontSize, 48), 6, 512),
       fontWeight: options.fontWeight ?? 600,
-    }) as EditorObject
+      lineHeight: options.vertical ? 0.9 : 1.16,
+      textAlign: options.vertical ? ('center' as const) : ('left' as const),
+    }
+    const textObject = (
+      layoutMode === 'auto'
+        ? new IText(value, textOptions)
+        : new Textbox(value, {
+            ...textOptions,
+            width: Math.max(24, finiteOr(options.width, 320)),
+            splitByGrapheme: true,
+          })
+    ) as EditorObject
+    textObject.editorTextLayoutMode = layoutMode
+    textObject.editorVerticalText = Boolean(options.vertical)
     this.initializeEditorObject(
       textObject,
       this.uniqueLayerName(options.name?.trim() || 'Text'),
     )
     this.addAndSelect(textObject)
     return this.requireEditorId(textObject)
+  }
+
+  public setSelectedFontFamily(fontFamily: string): boolean {
+    const selected = this.canvas.getActiveObjects()
+    if (
+      selected.length !== 1 ||
+      !(selected[0] instanceof IText) ||
+      !fontFamily.trim()
+    ) {
+      return false
+    }
+    this.mutate('text-style', () => {
+      selected[0].set('fontFamily', fontFamily.trim())
+      selected[0].set('dirty', true)
+    })
+    return true
+  }
+
+  public applyTextEffect(preset: TextEffectPreset): boolean {
+    const selected = this.canvas.getActiveObjects()
+    if (selected.length !== 1 || !(selected[0] instanceof IText)) return false
+    const text = selected[0]
+    this.mutate('text-style', () => {
+      if (preset === 'none') {
+        text.set({ stroke: 'transparent', strokeWidth: 0, shadow: null })
+      } else if (preset === 'neon') {
+        text.set({
+          fill: '#ffffff',
+          stroke: '#22d3ee',
+          strokeWidth: 1,
+          shadow: new Shadow({
+            color: '#22d3ee',
+            blur: 24,
+            offsetX: 0,
+            offsetY: 0,
+          }),
+        })
+      } else if (preset === 'splice') {
+        text.set({
+          fill: 'transparent',
+          stroke: '#7c3aed',
+          strokeWidth: 3,
+          shadow: new Shadow({
+            color: '#f97316',
+            blur: 0,
+            offsetX: 8,
+            offsetY: 8,
+          }),
+        })
+      } else if (preset === 'background') {
+        text.set({
+          fill: '#ffffff',
+          stroke: '#111827',
+          strokeWidth: 8,
+          paintFirst: 'stroke',
+          shadow: null,
+        })
+      } else {
+        text.set({
+          fill: '#f8fafc',
+          stroke: 'transparent',
+          strokeWidth: 0,
+          shadow: new Shadow({
+            color: '#7c3aed',
+            blur: 0,
+            offsetX: 10,
+            offsetY: 10,
+          }),
+        })
+      }
+      text.set('dirty', true)
+    })
+    return true
   }
 
   public getSelectedTextStyle():
@@ -1409,9 +2161,27 @@ export class FabricEditorEngine {
       return false
     }
 
+    const ownedGridContents = this.gridContentsOwnedBy(selected)
+    const objectsToRemove = [...new Set([...selected, ...ownedGridContents])]
     this.mutate('object-removed', () => {
       this.canvas.discardActiveObject()
-      this.canvas.remove(...selected)
+      const topLevel = new Set(this.canvas.getObjects())
+      const affectedGroups = new Set<Group>()
+      objectsToRemove.forEach((object) => {
+        if (topLevel.has(object)) {
+          this.canvas.remove(object)
+          return
+        }
+        const owner = object.group
+        if (owner instanceof Group && !(owner instanceof ActiveSelection)) {
+          owner.remove(object)
+          affectedGroups.add(owner)
+        }
+      })
+      affectedGroups.forEach((group) => {
+        group.triggerLayout()
+        group.setCoords()
+      })
     })
     return true
   }
@@ -1463,41 +2233,447 @@ export class FabricEditorEngine {
       return []
     }
 
-    const clones = await this.cloneObjects(source)
+    const ownedGridContents = this.gridContentsOwnedBy(source)
+    const duplicateSources = [
+      ...source,
+      ...ownedGridContents.filter((object) => !source.includes(object)),
+    ]
+    const clones = await this.cloneObjects(duplicateSources)
     try {
       this.assertUsable()
       const reservedNames = this.layerNames()
-      clones.forEach((clone) => {
-        this.preparePastedObject(clone, offset, reservedNames)
-      })
+      this.preparePastedObjects(clones, offset, reservedNames)
+      const primaryClones = clones.slice(0, source.length)
 
       this.mutate('duplicate', () => {
         this.canvas.discardActiveObject()
         this.canvas.add(...clones)
-        this.activateObjects(clones)
+        this.activateObjects(primaryClones)
       })
-      return clones.map((clone) => this.requireEditorId(clone))
+      return primaryClones.map((clone) => this.requireEditorId(clone))
     } catch (error) {
       this.disposeResources(clones, this.canvas.getObjects())
       throw error
     }
   }
 
+  /** Combines the selected top-level layers into a serializable Fabric group. */
+  public groupSelection(name = 'Group'): string | null {
+    this.assertUsable()
+    const selectedSet = new Set(this.canvas.getActiveObjects())
+    const selected = this.canvas
+      .getObjects()
+      .filter((object) => selectedSet.has(object))
+    if (selected.length < 2) return null
+    const containsGridCell = (object: FabricObject): boolean =>
+      (object as EditorObject).editorKind === 'grid-cell' ||
+      (object instanceof Group && object.getObjects().some(containsGridCell))
+    const constructingGrid = selected.every(
+      (object) => (object as EditorObject).editorKind === 'grid-cell',
+    )
+    if (
+      !constructingGrid &&
+      selected.some(
+        (object) =>
+          (object as EditorObject).editorKind === 'grid-cell-image' ||
+          containsGridCell(object),
+      )
+    ) {
+      return null
+    }
+
+    const group = new Group([], {
+      ...TOP_LEFT_ORIGIN,
+      interactive: true,
+      subTargetCheck: true,
+    }) as EditorObject & Group
+    group.editorKind = 'group'
+    this.initializeEditorObject(
+      group,
+      this.uniqueLayerName(name.trim() || 'Group'),
+    )
+
+    this.mutate('group', () => {
+      this.canvas.discardActiveObject()
+      this.canvas.remove(...selected)
+      group.add(...selected)
+      group.triggerLayout()
+      this.canvas.add(group)
+      this.canvas.setActiveObject(group)
+    })
+    return this.requireEditorId(group)
+  }
+
+  /** Restores the selected group children as independently editable layers. */
+  public ungroupSelection(): string[] {
+    this.assertUsable()
+    const active = this.canvas.getActiveObject()
+    if (!(active instanceof Group) || active instanceof ActiveSelection) {
+      return []
+    }
+    const groupIndex = this.canvas.getObjects().indexOf(active)
+    const children = active.getObjects()
+    if (children.length === 0) return []
+
+    this.mutate('group', () => {
+      this.canvas.discardActiveObject()
+      active.removeAll()
+      this.canvas.remove(active)
+      children.forEach((child) => this.normalizeEditorObject(child))
+      this.canvas.insertAt(Math.max(0, groupIndex), ...children)
+      this.activateObjects(children)
+    })
+    return children.map((child) =>
+      this.requireEditorId(this.normalizeEditorObject(child)),
+    )
+  }
+
+  /**
+   * Uses a selected vector layer as an absolute clip frame for a selected
+   * image. The frame remains embedded and can be released later.
+   */
+  public createClipFrame(): string | null {
+    this.assertUsable()
+    const selected = this.canvas.getActiveObjects()
+    const image = selected.find(
+      (object): object is FabricImage => object instanceof FabricImage,
+    )
+    const frame = selected.find((object) => object !== image)
+    if (!image || !frame || selected.length !== 2) return null
+    const editorImage = this.normalizeEditorObject(image)
+    const editorFrame = this.normalizeEditorObject(frame)
+    const frameId = this.requireEditorId(editorFrame)
+    const layerMaskClip =
+      editorImage.editorLayerMask &&
+      editorImage.editorLayerMaskEnabled !== false
+        ? editorImage.clipPath
+        : undefined
+
+    this.mutate('clip', () => {
+      this.canvas.discardActiveObject()
+      this.canvas.remove(frame)
+      editorFrame.editorKind = 'frame'
+      frame.set({
+        absolutePositioned: true,
+        selectable: false,
+        evented: false,
+        clipPath: layerMaskClip,
+      })
+      editorImage.editorClipFrameId = frameId
+      editorImage.editorClipSettings = {
+        fit: 'cover',
+        position: { x: 0.5, y: 0.5 },
+        scale: 1,
+        rotation: 0,
+      }
+      editorImage.set('clipPath', frame)
+      editorImage.set('dirty', true)
+      this.canvas.setActiveObject(image)
+    })
+    return this.requireEditorId(editorImage)
+  }
+
+  public releaseClipFrame(id?: string): string | null {
+    this.assertUsable()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    const frame = target ? this.embeddedClipFrame(target) : undefined
+    if (!target || !target.editorClipFrameId || !frame) return null
+    const editorFrame = frame as EditorObject
+    editorFrame.editorId = target.editorClipFrameId
+    editorFrame.editorName ||= this.uniqueLayerName('Frame')
+    target.editorClipFrameId = undefined
+    target.editorClipSettings = undefined
+    const layerMaskClip =
+      target.editorLayerMask && target.editorLayerMaskEnabled !== false
+        ? (frame.clipPath ?? this.createStoredLayerMaskClip(target))
+        : undefined
+
+    this.mutate('clip', () => {
+      if (target.editorLayerMask) {
+        frame.set('clipPath', undefined)
+      }
+      target.set('clipPath', layerMaskClip)
+      target.set('dirty', true)
+      frame.set({ absolutePositioned: false })
+      this.normalizeEditorObject(frame)
+      this.canvas.add(frame)
+      this.canvas.setActiveObject(frame)
+    })
+    return this.requireEditorId(editorFrame)
+  }
+
+  /** Applies the current 8-bit document selection as a layer mask. */
+  public applySelectionAsLayerMask(id?: string): boolean {
+    this.assertUsable()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    const bounds = this.selectionMask?.getNonEmptyBounds()
+    if (!target || !this.selectionMask || !bounds) return false
+    const encoded = encodeSelectionMaskForProject(this.selectionMask)
+    const clipPath = createSelectionMaskClip(this.selectionMask, bounds)
+
+    this.mutate('layer-mask', () => {
+      target.editorLayerMask = encoded
+      target.editorLayerMaskEnabled = true
+      target.editorLayerMaskSettings = {
+        inverted: false,
+        opacity: 1,
+        offsetX: 0,
+        offsetY: 0,
+      }
+      this.setLayerMaskClip(target, clipPath)
+    })
+    return true
+  }
+
+  public setLayerMaskEnabled(id: string, enabled: boolean): boolean {
+    this.assertUsable()
+    const target = this.findLayer(id)
+    if (!target?.editorLayerMask) return false
+    const mask = decodeSelectionMaskFromProject(target.editorLayerMask)
+    const bounds = mask.getNonEmptyBounds()
+    if (enabled && !bounds) return false
+
+    this.mutate('layer-mask', () => {
+      target.editorLayerMaskEnabled = enabled
+      this.setLayerMaskClip(
+        target,
+        enabled && bounds ? createSelectionMaskClip(mask, bounds) : undefined,
+      )
+    })
+    return true
+  }
+
+  public removeLayerMask(id?: string): boolean {
+    this.assertUsable()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    if (!target?.editorLayerMask) return false
+    this.mutate('layer-mask', () => {
+      target.editorLayerMask = undefined
+      target.editorLayerMaskEnabled = undefined
+      target.editorLayerMaskSettings = undefined
+      this.setLayerMaskClip(target, undefined)
+    })
+    return true
+  }
+
+  /**
+   * Bakes an enabled layer mask into the selected layer's pixels. The result
+   * occupies the same document coordinates and retains the layer id, stacking
+   * order, visibility, opacity, blend mode, and any independently editable
+   * clipping frame.
+   */
+  public async rasterizeLayerMask(id?: string): Promise<boolean> {
+    await this.waitForAdjustmentLayers()
+    const target = id
+      ? this.findLayer(id)
+      : this.canvas.getActiveObjects().length === 1
+        ? this.normalizeEditorObject(this.canvas.getActiveObjects()[0])
+        : undefined
+    if (!target?.editorLayerMask || target.editorLayerMaskEnabled === false) {
+      return false
+    }
+    const objects = this.canvas.getObjects()
+    const index = objects.indexOf(target)
+    if (index < 0) return false
+
+    const frame = this.embeddedClipFrame(target)
+    const maskClip = frame?.clipPath ?? target.clipPath
+    if (!maskClip) return false
+    const visibility = objects.map((object) => object.visible)
+    const backgroundColor = this.canvas.backgroundColor
+    const backgroundImage = this.canvas.backgroundImage
+    const overlayColor = this.canvas.overlayColor
+    const overlayImage = this.canvas.overlayImage
+    const originalVisible = target.visible
+    const originalOpacity = target.opacity
+    const originalBlend = target.globalCompositeOperation
+    let raster: HTMLCanvasElement
+
+    try {
+      this.withSuppressedEvents(() => {
+        objects.forEach((object) => object.set('visible', object === target))
+        target.set({
+          visible: true,
+          opacity: 1,
+          globalCompositeOperation: 'source-over',
+          clipPath: maskClip,
+          dirty: true,
+        })
+        if (frame) frame.set('clipPath', undefined)
+        this.canvas.backgroundColor = 'transparent'
+        this.canvas.backgroundImage = undefined
+        this.canvas.overlayColor = 'transparent'
+        this.canvas.overlayImage = undefined
+      })
+      raster = this.createDocumentCanvas()
+    } finally {
+      this.withSuppressedEvents(() => {
+        objects.forEach((object, objectIndex) =>
+          object.set('visible', visibility[objectIndex]),
+        )
+        target.set({
+          visible: originalVisible,
+          opacity: originalOpacity,
+          globalCompositeOperation: originalBlend,
+          clipPath: frame ?? maskClip,
+          dirty: true,
+        })
+        if (frame) frame.set('clipPath', maskClip)
+        this.canvas.backgroundColor = backgroundColor
+        this.canvas.backgroundImage = backgroundImage
+        this.canvas.overlayColor = overlayColor
+        this.canvas.overlayImage = overlayImage
+        this.canvas.requestRenderAll()
+      })
+    }
+
+    const rasterized = new FabricImage(raster, {
+      ...TOP_LEFT_ORIGIN,
+      left: 0,
+      top: 0,
+      width: this.documentWidth,
+      height: this.documentHeight,
+      visible: originalVisible,
+      opacity: originalOpacity,
+      globalCompositeOperation: originalBlend,
+    }) as FabricImage & EditorObject
+    rasterized.editorId = this.requireEditorId(target)
+    rasterized.editorName = this.requireEditorName(target)
+    rasterized.editorLocked = Boolean(target.editorLocked)
+    rasterized.editorTemplateId = target.editorTemplateId
+    if (frame) {
+      frame.set('clipPath', undefined)
+      rasterized.editorClipFrameId = target.editorClipFrameId
+      rasterized.editorClipSettings = target.editorClipSettings
+        ? structuredClone(target.editorClipSettings)
+        : undefined
+      rasterized.set('clipPath', frame)
+    }
+    this.initializeEditorObject(rasterized, rasterized.editorName)
+    rasterized.setCoords()
+
+    this.mutate('layer-mask', () => {
+      this.canvas.discardActiveObject()
+      target.set('clipPath', undefined)
+      this.canvas.remove(target)
+      this.canvas.insertAt(index, rasterized)
+      this.canvas.setActiveObject(rasterized)
+    })
+    return true
+  }
+
+  public getLayerTree(): LayerTreeInfo[] {
+    const selectedIds = new Set(this.getSelectedLayerIds())
+    const result: LayerTreeInfo[] = []
+    const visit = (
+      objects: readonly FabricObject[],
+      depth: number,
+      parentId?: string,
+    ): void => {
+      ;[...objects].reverse().forEach((object) => {
+        const editorObject = this.normalizeEditorObject(object)
+        if (editorObject.editorKind === 'grid-cell-image') return
+        const id = this.requireEditorId(editorObject)
+        const children = object instanceof Group ? object.getObjects() : []
+        result.push({
+          id,
+          name: this.requireEditorName(editorObject),
+          type: this.layerType(editorObject),
+          visible: editorObject.visible,
+          locked: Boolean(editorObject.editorLocked),
+          opacity: editorObject.opacity,
+          blend: editorObject.globalCompositeOperation,
+          selected: selectedIds.has(id),
+          ...(parentId ? { parentId } : {}),
+          depth,
+          hasChildren: children.length > 0,
+          clipped: Boolean(editorObject.editorClipFrameId),
+          masked: Boolean(editorObject.editorLayerMask),
+        })
+        if (children.length > 0) visit(children, depth + 1, id)
+      })
+    }
+    visit(this.canvas.getObjects(), 0)
+    return result
+  }
+
+  /** Applies renderer-neutral timeline output to a disposable preview canvas. */
+  public applyEvaluatedAnimationState(
+    states: readonly EvaluatedElementState[],
+  ): void {
+    this.assertUsable()
+    this.withSuppressedEvents(() => {
+      states.forEach((state) => {
+        const object = this.findLayer(state.elementId)
+        if (!object) return
+        object.set({
+          visible: state.visible,
+          opacity: clamp(object.opacity * state.opacity, 0, 1),
+          left: object.left + state.translateX,
+          top: object.top + state.translateY,
+          scaleX: object.scaleX * state.scaleX,
+          scaleY: object.scaleY * state.scaleY,
+        })
+        object.setCoords()
+        object.set('dirty', true)
+        if (state.clipProgress < 1) {
+          const bounds = object.getBoundingRect()
+          const width = bounds.width * clamp(state.clipProgress, 0, 1)
+          const left =
+            state.clipDirection === 'left'
+              ? bounds.left + bounds.width - width
+              : bounds.left
+          this.appendClipIntersection(
+            object,
+            new Rect({
+              ...TOP_LEFT_ORIGIN,
+              left,
+              top: bounds.top,
+              width,
+              height: bounds.height,
+              absolutePositioned: true,
+              selectable: false,
+              evented: false,
+            }),
+          )
+        }
+      })
+      this.canvas.requestRenderAll()
+    })
+  }
+
   public getLayers(): LayerInfo[] {
     const selectedIds = new Set(this.getSelectedLayerIds())
-    return [...this.canvas.getObjects()].reverse().map((object) => {
-      const editorObject = this.normalizeEditorObject(object)
-      return {
-        id: this.requireEditorId(editorObject),
-        name: this.requireEditorName(editorObject),
-        type: this.layerType(editorObject),
-        visible: editorObject.visible,
-        locked: Boolean(editorObject.editorLocked),
-        opacity: editorObject.opacity,
-        blend: editorObject.globalCompositeOperation,
-        selected: selectedIds.has(this.requireEditorId(editorObject)),
-      }
-    })
+    return [...this.canvas.getObjects()]
+      .filter(
+        (object) => (object as EditorObject).editorKind !== 'grid-cell-image',
+      )
+      .reverse()
+      .map((object) => {
+        const editorObject = this.normalizeEditorObject(object)
+        return {
+          id: this.requireEditorId(editorObject),
+          name: this.requireEditorName(editorObject),
+          type: this.layerType(editorObject),
+          visible: editorObject.visible,
+          locked: Boolean(editorObject.editorLocked),
+          opacity: editorObject.opacity,
+          blend: editorObject.globalCompositeOperation,
+          selected: selectedIds.has(this.requireEditorId(editorObject)),
+        }
+      })
   }
 
   public getSelectedLayerIds(): string[] {
@@ -1535,12 +2711,12 @@ export class FabricEditorEngine {
 
   public renameLayer(id: string, name: string): boolean {
     const target = this.findLayer(id)
-    const trimmed = name.trim()
-    if (!target || !trimmed) {
+    const repaired = repairRendererLayerName(name, '')
+    if (!target || !repaired) {
       return false
     }
     this.mutate('layer', () => {
-      target.editorName = trimmed
+      target.editorName = repaired.slice(0, MAX_LAYER_NAME_LENGTH)
     })
     return true
   }
@@ -1550,9 +2726,19 @@ export class FabricEditorEngine {
     if (!target) {
       return false
     }
+    const ownedGridContents = this.gridContentsOwnedBy([target])
+    const ownedGridContentSet = new Set<FabricObject>(ownedGridContents)
     this.mutate('layer', () => {
       target.set('visible', visible)
-      if (!visible && this.canvas.getActiveObjects().includes(target)) {
+      ownedGridContents.forEach((image) => image.set('visible', visible))
+      if (
+        !visible &&
+        this.canvas
+          .getActiveObjects()
+          .some(
+            (object) => object === target || ownedGridContentSet.has(object),
+          )
+      ) {
         this.canvas.discardActiveObject()
       }
     })
@@ -1564,10 +2750,23 @@ export class FabricEditorEngine {
     if (!target) {
       return false
     }
+    const ownedGridContents = this.gridContentsOwnedBy([target])
+    const ownedGridContentSet = new Set<FabricObject>(ownedGridContents)
     this.mutate('layer', () => {
       target.editorLocked = locked
       this.configureSingleObjectInteractivity(target)
-      if (locked && this.canvas.getActiveObjects().includes(target)) {
+      ownedGridContents.forEach((image) => {
+        image.editorLocked = locked
+        this.configureSingleObjectInteractivity(image)
+      })
+      if (
+        locked &&
+        this.canvas
+          .getActiveObjects()
+          .some(
+            (object) => object === target || ownedGridContentSet.has(object),
+          )
+      ) {
         this.canvas.discardActiveObject()
       }
     })
@@ -1579,8 +2778,11 @@ export class FabricEditorEngine {
     if (!target || !Number.isFinite(opacity)) {
       return false
     }
+    const ownedGridContents = this.gridContentsOwnedBy([target])
     this.mutate('layer-opacity', () => {
-      target.set('opacity', clamp(opacity, 0, 1))
+      const normalized = clamp(opacity, 0, 1)
+      target.set('opacity', normalized)
+      ownedGridContents.forEach((image) => image.set('opacity', normalized))
     })
     return true
   }
@@ -1590,8 +2792,12 @@ export class FabricEditorEngine {
     if (!target) {
       return false
     }
+    const ownedGridContents = this.gridContentsOwnedBy([target])
     this.mutate('layer', () => {
       target.set('globalCompositeOperation', blend)
+      ownedGridContents.forEach((image) =>
+        image.set('globalCompositeOperation', blend),
+      )
     })
     return true
   }
@@ -1602,40 +2808,52 @@ export class FabricEditorEngine {
    */
   public moveLayer(id: string, index: number): boolean {
     const target = this.findLayer(id)
-    const objects = this.canvas.getObjects()
-    if (!target || !Number.isFinite(index) || objects.length < 2) {
+    if (!target || !Number.isFinite(index)) {
       return false
     }
-    const uiIndex = clamp(Math.round(index), 0, objects.length - 1)
-    const canvasIndex = objects.length - 1 - uiIndex
+    const owner = this.persistentObjectOwner(target)
+    if (owner) {
+      const siblings = owner.getObjects()
+      if (siblings.length < 2) return false
+      const uiIndex = clamp(Math.round(index), 0, siblings.length - 1)
+      const ownerIndex = siblings.length - 1 - uiIndex
+      if (siblings.indexOf(target) === ownerIndex) return false
+      this.mutate('layer', () => {
+        owner.moveObjectTo(target, ownerIndex)
+        owner.triggerLayout()
+        owner.setCoords()
+      })
+      return true
+    }
+
+    const units = this.topLevelStackUnits()
+    const sourceIndex = units.findIndex((unit) => unit.includes(target))
+    if (sourceIndex < 0 || units.length < 2) return false
+    const uiIndex = clamp(Math.round(index), 0, units.length - 1)
+    const targetIndex = units.length - 1 - uiIndex
+    if (sourceIndex === targetIndex) return false
     this.mutate('layer', () => {
-      this.canvas.moveObjectTo(target, canvasIndex)
+      const [unit] = units.splice(sourceIndex, 1)
+      units.splice(targetIndex, 0, unit)
+      this.applyTopLevelStackUnits(units)
     })
     return true
   }
 
   public moveLayerForward(id: string): boolean {
-    return this.moveLayerWith(id, (object) =>
-      this.canvas.bringObjectForward(object),
-    )
+    return this.moveLayerInStack(id, 'forward')
   }
 
   public moveLayerBackward(id: string): boolean {
-    return this.moveLayerWith(id, (object) =>
-      this.canvas.sendObjectBackwards(object),
-    )
+    return this.moveLayerInStack(id, 'backward')
   }
 
   public moveLayerToFront(id: string): boolean {
-    return this.moveLayerWith(id, (object) =>
-      this.canvas.bringObjectToFront(object),
-    )
+    return this.moveLayerInStack(id, 'front')
   }
 
   public moveLayerToBack(id: string): boolean {
-    return this.moveLayerWith(id, (object) =>
-      this.canvas.sendObjectToBack(object),
-    )
+    return this.moveLayerInStack(id, 'back')
   }
 
   public getSelectionTransform(): SelectionTransform | null {
@@ -1985,6 +3203,16 @@ export class FabricEditorEngine {
     return nextZoom
   }
 
+  public zoomAtPoint(x: number, y: number, zoom: number): number {
+    this.assertUsable()
+    const nextZoom = clamp(finiteOr(zoom, 1), MIN_ZOOM, MAX_ZOOM)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return this.getZoom()
+    this.canvas.zoomToPoint(new Point(x, y), nextZoom)
+    this.canvas.requestRenderAll()
+    this.emitZoom()
+    return nextZoom
+  }
+
   public zoomIn(factor = 1.2): number {
     const safeFactor = Math.max(1.01, finiteOr(factor, 1.2))
     return this.setZoom(this.getZoom() * safeFactor)
@@ -2073,6 +3301,30 @@ export class FabricEditorEngine {
     }
   }
 
+  /** Maps a DOM drop into bounded document coordinates and an optional grid cell. */
+  public getCanvasDropTarget(event: MouseEvent): CanvasDropTarget | undefined {
+    this.assertUsable()
+    const scenePoint = this.canvas.getScenePoint(event)
+    if (
+      !Number.isFinite(scenePoint.x) ||
+      !Number.isFinite(scenePoint.y) ||
+      scenePoint.x < 0 ||
+      scenePoint.y < 0 ||
+      scenePoint.x > this.documentWidth ||
+      scenePoint.y > this.documentHeight
+    ) {
+      return undefined
+    }
+    const point = { x: scenePoint.x, y: scenePoint.y }
+    const cell = this.findGridCellAtPoint(scenePoint)
+    const frame = cell ? undefined : this.findDropFrameAtPoint(scenePoint)
+    return {
+      point,
+      ...(cell ? { gridCellId: this.requireEditorId(cell) } : {}),
+      ...(frame ? { frameLayerId: this.requireEditorId(frame) } : {}),
+    }
+  }
+
   public getViewportSize(): { width: number; height: number } {
     return {
       width: this.canvas.getWidth(),
@@ -2133,6 +3385,123 @@ export class FabricEditorEngine {
     })
   }
 
+  public setSolidBackground(color: string): void {
+    this.assertUsable()
+    this.mutate('background', () => {
+      this.canvas.backgroundColor = color
+    })
+  }
+
+  public setGradientBackground(start: string, end: string, angle = 45): void {
+    this.assertUsable()
+    const radians = (angle * Math.PI) / 180
+    const centerX = this.documentWidth / 2
+    const centerY = this.documentHeight / 2
+    const radius = Math.hypot(this.documentWidth, this.documentHeight) / 2
+    const deltaX = Math.cos(radians) * radius
+    const deltaY = Math.sin(radians) * radius
+    this.mutate('background', () => {
+      this.canvas.backgroundColor = new Gradient({
+        type: 'linear',
+        gradientUnits: 'pixels',
+        coords: {
+          x1: centerX - deltaX,
+          y1: centerY - deltaY,
+          x2: centerX + deltaX,
+          y2: centerY + deltaY,
+        },
+        colorStops: [
+          { offset: 0, color: start },
+          { offset: 1, color: end },
+        ],
+      })
+    })
+  }
+
+  public clearBackground(): void {
+    this.setSolidBackground('transparent')
+  }
+
+  /** Resizes the document and reflows all top-level objects as one undo step. */
+  public magicResize(
+    width: number,
+    height: number,
+    anchor: ResizeAnchor = 'center',
+    mode: MagicResizeMode = 'fit',
+  ): void {
+    this.assertUsable()
+    const nextWidth = documentDimension(width)
+    const nextHeight = documentDimension(height)
+    const previousWidth = this.documentWidth
+    const previousHeight = this.documentHeight
+    if (nextWidth === previousWidth && nextHeight === previousHeight) return
+
+    const scaleX = nextWidth / previousWidth
+    const scaleY = nextHeight / previousHeight
+    const uniformScale =
+      mode === 'fill' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY)
+    const appliedScaleX = mode === 'stretch' ? scaleX : uniformScale
+    const appliedScaleY = mode === 'stretch' ? scaleY : uniformScale
+    const contentWidth = previousWidth * appliedScaleX
+    const contentHeight = previousHeight * appliedScaleY
+    const horizontal =
+      anchor.endsWith('left') || anchor === 'left'
+        ? 0
+        : anchor.endsWith('right') || anchor === 'right'
+          ? 1
+          : 0.5
+    const vertical =
+      anchor.startsWith('top') || anchor === 'top'
+        ? 0
+        : anchor.startsWith('bottom') || anchor === 'bottom'
+          ? 1
+          : 0.5
+    const offsetX = (nextWidth - contentWidth) * horizontal
+    const offsetY = (nextHeight - contentHeight) * vertical
+
+    this.mutate('magic-resize', () => {
+      this.canvas.getObjects().forEach((object) => {
+        object.set({
+          left: object.left * appliedScaleX + offsetX,
+          top: object.top * appliedScaleY + offsetY,
+          scaleX: object.scaleX * appliedScaleX,
+          scaleY: object.scaleY * appliedScaleY,
+        })
+        object.setCoords()
+      })
+      const transform: DocumentSpaceTransform = {
+        scaleX: appliedScaleX,
+        scaleY: appliedScaleY,
+        offsetX,
+        offsetY,
+        width: nextWidth,
+        height: nextHeight,
+      }
+      this.transformAbsoluteClipPaths(transform)
+      this.transformStoredLayerMasks((mask) =>
+        transformDocumentMask(mask, transform),
+      )
+      const transformedSelection = this.selectionMask
+        ? transformDocumentMask(this.selectionMask, transform)
+        : undefined
+      this.documentWidth = nextWidth
+      this.documentHeight = nextHeight
+      this.editorState = normalizeEditorState(
+        this.editorState,
+        nextWidth,
+        nextHeight,
+      )
+      if (transformedSelection) {
+        this.editorState = {
+          ...this.editorState,
+          selectionMask: encodeSelectionMaskForProject(transformedSelection),
+        }
+      }
+      this.syncSelectionMask()
+      this.setDocumentClip()
+    })
+  }
+
   public cropToSelection(): { width: number; height: number } | null {
     this.assertUsable()
     const activeObject = this.canvas.getActiveObject()
@@ -2166,6 +3535,21 @@ export class FabricEditorEngine {
         })
         object.setCoords()
       })
+      const transform: DocumentSpaceTransform = {
+        scaleX: 1,
+        scaleY: 1,
+        offsetX: -left,
+        offsetY: -top,
+        width,
+        height,
+      }
+      this.transformAbsoluteClipPaths(transform)
+      this.transformStoredLayerMasks((mask) =>
+        transformDocumentMask(mask, transform),
+      )
+      const transformedSelection = this.selectionMask
+        ? transformDocumentMask(this.selectionMask, transform)
+        : undefined
       this.documentWidth = width
       this.documentHeight = height
       this.editorState = {
@@ -2182,6 +3566,12 @@ export class FabricEditorEngine {
                 (guide.axis === 'x' ? this.documentWidth : this.documentHeight),
           ),
         snapTolerance: this.editorState.snapTolerance,
+        ...(transformedSelection
+          ? {
+              selectionMask:
+                encodeSelectionMaskForProject(transformedSelection),
+            }
+          : {}),
       }
       this.syncSelectionMask()
       this.setDocumentClip()
@@ -2593,8 +3983,27 @@ export class FabricEditorEngine {
     format: ExportImageFormat = 'png',
     quality = 0.92,
     multiplier = 1,
+    options: ExportDataUrlOptions = {},
   ): Promise<string> {
     await this.waitForAdjustmentLayers()
+    const resolvedMultiplier = options.exactSafeMultiplier
+      ? multiplier
+      : clamp(finiteOr(multiplier, 1), 0.1, 8)
+    if (
+      options.exactSafeMultiplier &&
+      (!Number.isFinite(resolvedMultiplier) || resolvedMultiplier <= 0)
+    ) {
+      throw new RangeError('Export multiplier must be positive and finite.')
+    }
+    if (options.exactSafeMultiplier) {
+      assertSafeImageDimensions({
+        width: Math.max(1, Math.ceil(this.documentWidth * resolvedMultiplier)),
+        height: Math.max(
+          1,
+          Math.ceil(this.documentHeight * resolvedMultiplier),
+        ),
+      })
+    }
     const previousTransform = [
       ...this.canvas.viewportTransform,
     ] as typeof this.canvas.viewportTransform
@@ -2617,7 +4026,7 @@ export class FabricEditorEngine {
       dataUrl = this.canvas.toDataURL({
         format,
         quality: clamp(finiteOr(quality, 0.92), 0, 1),
-        multiplier: clamp(finiteOr(multiplier, 1), 0.1, 8),
+        multiplier: resolvedMultiplier,
         left: 0,
         top: 0,
         width: this.documentWidth,
@@ -2823,12 +4232,17 @@ export class FabricEditorEngine {
     if (selected.length === 0) {
       return false
     }
-    const clones = await this.cloneObjects(selected)
+    const ownedGridContents = this.gridContentsOwnedBy(selected)
+    const sources = [
+      ...selected,
+      ...ownedGridContents.filter((object) => !selected.includes(object)),
+    ]
+    const clones = await this.cloneObjects(sources)
     if (this.disposed) {
       this.disposeObjects(clones)
       this.assertUsable()
     }
-    this.replaceClipboard(clones)
+    this.replaceClipboard(clones, selected.length)
     this.emitStatus('選択範囲をコピーしました。', 'info')
     return true
   }
@@ -2840,16 +4254,27 @@ export class FabricEditorEngine {
       return false
     }
 
-    const clones = await this.cloneObjects(selected)
+    const ownedGridContents = this.gridContentsOwnedBy(selected)
+    const sources = [
+      ...selected,
+      ...ownedGridContents.filter((object) => !selected.includes(object)),
+    ]
+    const clones = await this.cloneObjects(sources)
     if (this.disposed) {
       this.disposeObjects(clones)
       this.assertUsable()
     }
     const selectedSet = new Set(selected)
     const objectsOnCanvas = new Set(this.canvas.getObjects())
-    const objectsToRemove = selected.filter((object) =>
-      objectsOnCanvas.has(object),
-    )
+    const objectsToRemove = [
+      ...new Set(
+        sources.filter(
+          (object) =>
+            objectsOnCanvas.has(object) ||
+            this.persistentObjectOwner(object) !== undefined,
+        ),
+      ),
+    ]
     if (objectsToRemove.length === 0) {
       this.disposeObjects(clones)
       return false
@@ -2864,13 +4289,28 @@ export class FabricEditorEngine {
         ) {
           this.canvas.discardActiveObject()
         }
-        this.canvas.remove(...objectsToRemove)
+        const affectedGroups = new Set<Group>()
+        objectsToRemove.forEach((object) => {
+          if (objectsOnCanvas.has(object)) {
+            this.canvas.remove(object)
+            return
+          }
+          const owner = this.persistentObjectOwner(object)
+          if (owner) {
+            owner.remove(object)
+            affectedGroups.add(owner)
+          }
+        })
+        affectedGroups.forEach((group) => {
+          group.triggerLayout()
+          group.setCoords()
+        })
       })
     } catch (error) {
       this.disposeObjects(clones)
       throw error
     }
-    this.replaceClipboard(clones)
+    this.replaceClipboard(clones, selected.length)
     this.emitStatus('選択範囲を切り取りました。', 'info')
     return true
   }
@@ -2885,16 +4325,15 @@ export class FabricEditorEngine {
       this.assertUsable()
       const appliedOffset = this.nextPasteOffset(clones, offset)
       const reservedNames = this.layerNames()
-      clones.forEach((clone) => {
-        this.preparePastedObject(clone, appliedOffset, reservedNames)
-      })
+      this.preparePastedObjects(clones, appliedOffset, reservedNames)
+      const primaryClones = clones.slice(0, this.clipboardPrimaryCount)
 
       this.mutate('paste', () => {
         this.canvas.discardActiveObject()
         this.canvas.add(...clones)
-        this.activateObjects(clones)
+        this.activateObjects(primaryClones)
       })
-      return clones.map((clone) => this.requireEditorId(clone))
+      return primaryClones.map((clone) => this.requireEditorId(clone))
     } catch (error) {
       this.disposeResources(clones, this.canvas.getObjects())
       throw error
@@ -2946,6 +4385,7 @@ export class FabricEditorEngine {
         }
       }),
       this.canvas.on('object:modified', () => {
+        this.syncGridCellContents()
         this.handleDocumentEvent('object-modified')
       }),
       this.canvas.on('text:changed', () => {
@@ -3029,6 +4469,64 @@ export class FabricEditorEngine {
       excludeFromExport: true,
     })
     this.canvas.clipPath = clip
+  }
+
+  private hasNestedClip(object: FabricObject): boolean {
+    if (object.clipPath?.clipPath) return true
+    return (
+      object instanceof Group &&
+      object.getObjects().some((child) => this.hasNestedClip(child))
+    )
+  }
+
+  private createRasterSvg(
+    dataUrl: string,
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    escapedLabel: string,
+  ): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="${left} ${top} ${width} ${height}" role="img" aria-label="${escapedLabel}">`,
+      `<image x="${left}" y="${top}" width="${width}" height="${height}" href="${escapeXmlAttribute(dataUrl)}" />`,
+      '</svg>',
+    ].join('')
+  }
+
+  private createIsolatedLayerCanvas(target: FabricObject): HTMLCanvasElement {
+    const objects = this.canvas.getObjects()
+    const visibility = objects.map((object) => object.visible)
+    const backgroundColor = this.canvas.backgroundColor
+    const backgroundImage = this.canvas.backgroundImage
+    const overlayColor = this.canvas.overlayColor
+    const overlayImage = this.canvas.overlayImage
+    const topLevelTarget = objects.includes(target) ? target : undefined
+    try {
+      this.withSuppressedEvents(() => {
+        if (topLevelTarget) {
+          objects.forEach((object) => object.set('visible', object === target))
+          target.set('visible', true)
+        }
+        this.canvas.backgroundColor = 'transparent'
+        this.canvas.backgroundImage = undefined
+        this.canvas.overlayColor = 'transparent'
+        this.canvas.overlayImage = undefined
+      })
+      return this.createDocumentCanvas()
+    } finally {
+      this.withSuppressedEvents(() => {
+        objects.forEach((object, index) =>
+          object.set('visible', visibility[index]),
+        )
+        this.canvas.backgroundColor = backgroundColor
+        this.canvas.backgroundImage = backgroundImage
+        this.canvas.overlayColor = overlayColor
+        this.canvas.overlayImage = overlayImage
+        this.canvas.requestRenderAll()
+      })
+    }
   }
 
   private createDocumentCanvas(): HTMLCanvasElement {
@@ -3462,6 +4960,111 @@ export class FabricEditorEngine {
     this.selectionOverlayTimer = undefined
   }
 
+  /**
+   * A clipping frame is always the outer clip on its owning layer. Any layer
+   * mask is nested inside it, which lets either feature be toggled without
+   * replacing the other one's serializable Fabric object.
+   */
+  private embeddedClipFrame(target: EditorObject): EditorObject | undefined {
+    if (!target.editorClipFrameId || !target.clipPath) return undefined
+    const candidate = target.clipPath as EditorObject
+    return candidate.editorId === target.editorClipFrameId ||
+      candidate.editorKind === 'frame'
+      ? candidate
+      : undefined
+  }
+
+  private transformAbsoluteClipPaths(transform: DocumentSpaceTransform): void {
+    const visited = new Set<FabricObject>()
+    const visitClip = (clip: FabricObject): void => {
+      if (visited.has(clip)) return
+      visited.add(clip)
+      if (clip.absolutePositioned) {
+        clip.set({
+          left: clip.left * transform.scaleX + transform.offsetX,
+          top: clip.top * transform.scaleY + transform.offsetY,
+          scaleX: clip.scaleX * transform.scaleX,
+          scaleY: clip.scaleY * transform.scaleY,
+        })
+        clip.setCoords()
+      }
+      if (clip.clipPath) visitClip(clip.clipPath as FabricObject)
+    }
+    const visitObject = (object: FabricObject): void => {
+      if (object.clipPath) visitClip(object.clipPath as FabricObject)
+      if (object instanceof Group) object.getObjects().forEach(visitObject)
+    }
+    this.canvas.getObjects().forEach(visitObject)
+  }
+
+  private transformStoredLayerMasks(
+    transform: (mask: SelectionMask) => SelectionMask,
+  ): void {
+    const visit = (object: FabricObject): void => {
+      const target = object as EditorObject
+      if (target.editorLayerMask) {
+        const transformed = transform(
+          decodeSelectionMaskFromProject(target.editorLayerMask),
+        )
+        target.editorLayerMask = encodeSelectionMaskForProject(transformed)
+        const bounds = transformed.getNonEmptyBounds()
+        this.setLayerMaskClip(
+          target,
+          target.editorLayerMaskEnabled !== false && bounds
+            ? createSelectionMaskClip(transformed, bounds)
+            : undefined,
+        )
+      }
+      if (object instanceof Group) object.getObjects().forEach(visit)
+    }
+    this.canvas.getObjects().forEach(visit)
+  }
+
+  private createStoredLayerMaskClip(
+    target: EditorObject,
+  ): FabricObject | undefined {
+    if (!target.editorLayerMask || target.editorLayerMaskEnabled === false) {
+      return undefined
+    }
+    const mask = decodeSelectionMaskFromProject(target.editorLayerMask)
+    const bounds = mask.getNonEmptyBounds()
+    return bounds ? createSelectionMaskClip(mask, bounds) : undefined
+  }
+
+  private setLayerMaskClip(
+    target: EditorObject,
+    clipPath: FabricObject | undefined,
+  ): void {
+    const frame = this.embeddedClipFrame(target)
+    const host = frame ?? target
+    host.set('clipPath', clipPath)
+    host.set('dirty', true)
+    target.set('dirty', true)
+  }
+
+  /** Appends an absolute clip as an intersection without disturbing clips. */
+  private appendClipIntersection(
+    target: FabricObject,
+    clipPath: FabricObject,
+  ): void {
+    const outer = target.clipPath
+    if (!outer) {
+      target.set('clipPath', clipPath)
+      target.set('dirty', true)
+      return
+    }
+
+    let tail = outer as FabricObject
+    const visited = new Set<FabricObject>()
+    while (tail.clipPath && !visited.has(tail)) {
+      visited.add(tail)
+      tail = tail.clipPath as FabricObject
+    }
+    tail.set('clipPath', clipPath)
+    tail.set('dirty', true)
+    target.set('dirty', true)
+  }
+
   private maskClip(object: FabricObject): FabricObject {
     if (!this.selectionMask || !this.selectionBounds) {
       return createEmptyAbsoluteClip()
@@ -3570,6 +5173,16 @@ export class FabricEditorEngine {
     object.editorName = object.editorName || name
     object.editorLocked = Boolean(object.editorLocked)
     this.configureSingleObjectInteractivity(object)
+    if (object instanceof Group) {
+      object
+        .getObjects()
+        .forEach((child) =>
+          this.initializeEditorObject(
+            child as EditorObject,
+            this.defaultNameForObject(child),
+          ),
+        )
+    }
   }
 
   private normalizeEditorObject(object: FabricObject): EditorObject {
@@ -3585,6 +5198,11 @@ export class FabricEditorEngine {
     }
     editorObject.editorLocked = Boolean(editorObject.editorLocked)
     this.configureSingleObjectInteractivity(editorObject)
+    if (editorObject instanceof Group) {
+      editorObject
+        .getObjects()
+        .forEach((child) => this.normalizeEditorObject(child))
+    }
     return editorObject
   }
 
@@ -3631,32 +5249,450 @@ export class FabricEditorEngine {
     this.canvas.setActiveObject(new ActiveSelection(objects))
   }
 
-  private findLayer(id: string): EditorObject | undefined {
-    for (const object of this.canvas.getObjects()) {
-      const editorObject = this.normalizeEditorObject(object)
-      if (editorObject.editorId === id) {
+  private async replaceSemanticSvgLayer(
+    id: string,
+    sanitizedSvg: string,
+    kind: 'chart' | 'table',
+    applyMetadata: (replacement: EditorObject) => void,
+  ): Promise<boolean> {
+    const parsed = await loadSVGFromString(sanitizedSvg)
+    this.assertUsable()
+    const parsedObjects = parsed.objects.filter(
+      (object): object is FabricObject => object instanceof FabricObject,
+    )
+    if (parsedObjects.length === 0) {
+      throw new TypeError(
+        'The semantic SVG does not contain supported objects.',
+      )
+    }
+
+    let replacement: FabricObject | undefined
+    try {
+      replacement = util.groupSVGElements(parsedObjects, parsed.options)
+      const target = this.findLayer(id)
+      const index = target ? this.canvas.getObjects().indexOf(target) : -1
+      if (!target || index < 0) {
+        this.disposeResources([replacement], this.canvas.getObjects())
+        return false
+      }
+
+      const selected = this.canvas.getActiveObjects()
+      const selectedAfterReplacement = selected.map((object) =>
+        object === target ? replacement! : object,
+      )
+      const targetWasSelected = selected.includes(target)
+      const clipPath = target.clipPath
+      const editorReplacement = replacement as EditorObject
+      this.normalizeObjectOrigin(editorReplacement)
+      editorReplacement.editorId = this.requireEditorId(target)
+      editorReplacement.editorName = this.requireEditorName(target)
+      editorReplacement.editorLocked = Boolean(target.editorLocked)
+      editorReplacement.editorKind = kind
+      editorReplacement.editorTemplateId = target.editorTemplateId
+      editorReplacement.editorLayerType = target.editorLayerType
+      editorReplacement.editorClipFrameId = target.editorClipFrameId
+      editorReplacement.editorClipSettings = target.editorClipSettings
+        ? structuredClone(target.editorClipSettings)
+        : undefined
+      editorReplacement.editorLayerMask = copySelectionMask(
+        target.editorLayerMask,
+      )
+      editorReplacement.editorLayerMaskEnabled = target.editorLayerMaskEnabled
+      editorReplacement.editorLayerMaskSettings = target.editorLayerMaskSettings
+        ? structuredClone(target.editorLayerMaskSettings)
+        : undefined
+      applyMetadata(editorReplacement)
+      this.initializeEditorObject(
+        editorReplacement,
+        editorReplacement.editorName,
+      )
+      replacement.set({
+        ...TOP_LEFT_ORIGIN,
+        left: target.left,
+        top: target.top,
+        scaleX: target.scaleX,
+        scaleY: target.scaleY,
+        skewX: target.skewX,
+        skewY: target.skewY,
+        angle: target.angle,
+        flipX: target.flipX,
+        flipY: target.flipY,
+        visible: target.visible,
+        opacity: target.opacity,
+        globalCompositeOperation: target.globalCompositeOperation,
+        shadow: target.shadow,
+        clipPath,
+        dirty: true,
+      })
+      replacement.setCoords()
+
+      this.mutate(kind, () => {
+        if (targetWasSelected) this.canvas.discardActiveObject()
+        target.set('clipPath', undefined)
+        this.canvas.remove(target)
+        this.canvas.insertAt(index, replacement!)
+        if (targetWasSelected) this.activateObjects(selectedAfterReplacement)
+      })
+      return true
+    } catch (error) {
+      this.disposeResources(
+        replacement ? [replacement] : parsedObjects,
+        this.canvas.getObjects(),
+      )
+      throw error
+    }
+  }
+
+  private syncGridCellContent(
+    image: EditorObject & FabricImage,
+    cell: EditorObject & Rect,
+  ): void {
+    const frame = this.embeddedClipFrame(image)
+    if (!frame) return
+    const transform = cell.calcTransformMatrix()
+    const decomposition = util.qrDecompose(transform)
+    const sourceWidth = Math.max(1, image.width)
+    const sourceHeight = Math.max(1, image.height)
+    const cellWidth = Math.max(1, cell.width)
+    const cellHeight = Math.max(1, cell.height)
+    const owner =
+      cell.group instanceof Group ? (cell.group as EditorObject & Group) : null
+    const coverScale = Math.max(
+      cellWidth / sourceWidth,
+      cellHeight / sourceHeight,
+    )
+    const imageTopLeft = util.transformPoint(
+      new Point(
+        (-sourceWidth * coverScale) / 2,
+        (-sourceHeight * coverScale) / 2,
+      ),
+      transform,
+    )
+    const frameTopLeft = util.transformPoint(
+      new Point(-cellWidth / 2, -cellHeight / 2),
+      transform,
+    )
+    image.set({
+      ...TOP_LEFT_ORIGIN,
+      left: imageTopLeft.x,
+      top: imageTopLeft.y,
+      scaleX: Math.abs(decomposition.scaleX) * coverScale,
+      scaleY: Math.abs(decomposition.scaleY) * coverScale,
+      angle: decomposition.angle,
+      skewX: decomposition.skewX,
+      skewY: 0,
+      visible: cell.visible && (owner?.visible ?? true),
+      opacity: cell.opacity * (owner?.opacity ?? 1),
+      globalCompositeOperation:
+        cell.globalCompositeOperation !== 'source-over'
+          ? cell.globalCompositeOperation
+          : (owner?.globalCompositeOperation ?? 'source-over'),
+      dirty: true,
+    })
+    image.editorLocked =
+      Boolean(cell.editorLocked) || Boolean(owner?.editorLocked)
+    this.configureSingleObjectInteractivity(image)
+    frame.set({
+      ...TOP_LEFT_ORIGIN,
+      left: frameTopLeft.x,
+      top: frameTopLeft.y,
+      width: cellWidth,
+      height: cellHeight,
+      scaleX: Math.abs(decomposition.scaleX),
+      scaleY: Math.abs(decomposition.scaleY),
+      angle: decomposition.angle,
+      skewX: decomposition.skewX,
+      skewY: 0,
+      absolutePositioned: true,
+      dirty: true,
+    })
+    frame.setCoords()
+    image.setCoords()
+  }
+
+  private selectedGridGroupLayout(): ResolvedGridGroupLayout | undefined {
+    const selectedObjects = this.canvas
+      .getActiveObjects()
+      .map((object) => object as EditorObject)
+    const selectedIds = new Set(
+      selectedObjects.flatMap((object) => [
+        this.requireEditorId(object),
+        ...(object.editorGridCellId ? [object.editorGridCellId] : []),
+      ]),
+    )
+    if (selectedIds.size === 0) return undefined
+
+    const visit = (
+      objects: readonly FabricObject[],
+    ): ResolvedGridGroupLayout | undefined => {
+      for (const object of objects) {
+        if (!(object instanceof Group)) continue
+        const group = object as EditorObject & Group
+        const gridCells = group
+          .getObjects()
+          .filter(
+            (child): child is EditorObject & Rect =>
+              child instanceof Rect &&
+              (child as EditorObject).editorKind === 'grid-cell' &&
+              Boolean((child as EditorObject).editorGridCellId),
+          )
+        const groupSelected = selectedIds.has(this.requireEditorId(group))
+        const childSelected = gridCells.some((cell) =>
+          selectedIds.has(this.requireEditorId(cell)),
+        )
+        if (gridCells.length >= 2 && (groupSelected || childSelected)) {
+          const left = Math.min(...gridCells.map((cell) => cell.left))
+          const top = Math.min(...gridCells.map((cell) => cell.top))
+          const right = Math.max(
+            ...gridCells.map(
+              (cell) => cell.left + Math.abs(cell.width * cell.scaleX),
+            ),
+          )
+          const bottom = Math.max(
+            ...gridCells.map(
+              (cell) => cell.top + Math.abs(cell.height * cell.scaleY),
+            ),
+          )
+          const width = right - left
+          const height = bottom - top
+          if (width <= EPSILON || height <= EPSILON) return undefined
+          const cells = new Map(
+            gridCells.map((cell) => [this.requireEditorId(cell), cell]),
+          )
+          return {
+            group,
+            cells,
+            left,
+            top,
+            width,
+            height,
+            layout: gridCells.map((cell) => ({
+              id: this.requireEditorId(cell),
+              x: (cell.left - left) / width,
+              y: (cell.top - top) / height,
+              width: Math.abs(cell.width * cell.scaleX) / width,
+              height: Math.abs(cell.height * cell.scaleY) / height,
+            })),
+          }
+        }
+        const nested = visit(group.getObjects())
+        if (nested) return nested
+      }
+      return undefined
+    }
+
+    return visit(this.canvas.getObjects())
+  }
+
+  private gridContentsOwnedBy(
+    objects: readonly FabricObject[],
+  ): Array<EditorObject & FabricImage> {
+    const ownedCellIds = new Set<string>()
+    const visit = (object: FabricObject): void => {
+      const editorObject = object as EditorObject
+      if (
+        editorObject.editorKind === 'grid-cell' &&
+        editorObject.editorGridCellId
+      ) {
+        ownedCellIds.add(editorObject.editorGridCellId)
+      }
+      if (object instanceof Group) object.getObjects().forEach(visit)
+    }
+    objects.forEach(visit)
+    if (ownedCellIds.size === 0) return []
+    return this.canvas
+      .getObjects()
+      .filter((object): object is EditorObject & FabricImage => {
+        const editorObject = object as EditorObject
+        return (
+          object instanceof FabricImage &&
+          editorObject.editorKind === 'grid-cell-image' &&
+          Boolean(
+            editorObject.editorGridCellId &&
+            ownedCellIds.has(editorObject.editorGridCellId),
+          )
+        )
+      })
+  }
+
+  private syncGridCellContents(): void {
+    this.canvas.getObjects().forEach((object) => {
+      const image = object as EditorObject & FabricImage
+      if (
+        !(object instanceof FabricImage) ||
+        image.editorKind !== 'grid-cell-image' ||
+        !image.editorGridCellId
+      ) {
+        return
+      }
+      const cell = this.findLayer(image.editorGridCellId)
+      if (!(cell instanceof Rect)) return
+      this.syncGridCellContent(image, cell as EditorObject & Rect)
+    })
+  }
+
+  private findGridCellAtPoint(point: Point): EditorObject | undefined {
+    const visit = (
+      objects: readonly FabricObject[],
+    ): EditorObject | undefined => {
+      for (let index = objects.length - 1; index >= 0; index -= 1) {
+        const object = objects[index]
+        if (!object.visible) continue
+        if (object instanceof Group) {
+          const nested = visit(object.getObjects())
+          if (nested) return nested
+        }
+        const editorObject = object as EditorObject
+        if (
+          editorObject.editorKind !== 'grid-cell' ||
+          !editorObject.editorGridCellId
+        ) {
+          continue
+        }
+        const bounds = object.getBoundingRect()
+        if (
+          point.x >= bounds.left &&
+          point.x <= bounds.left + bounds.width &&
+          point.y >= bounds.top &&
+          point.y <= bounds.top + bounds.height
+        ) {
+          return editorObject
+        }
+      }
+      return undefined
+    }
+    return visit(this.canvas.getObjects())
+  }
+
+  private findDropFrameAtPoint(point: Point): EditorObject | undefined {
+    for (
+      let index = this.canvas.getObjects().length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const object = this.canvas.getObjects()[index]
+      const editorObject = object as EditorObject
+      if (
+        !object.visible ||
+        object instanceof FabricImage ||
+        editorObject.editorKind !== 'frame'
+      ) {
+        continue
+      }
+      const bounds = object.getBoundingRect()
+      if (
+        point.x >= bounds.left &&
+        point.x <= bounds.left + bounds.width &&
+        point.y >= bounds.top &&
+        point.y <= bounds.top + bounds.height
+      ) {
         return editorObject
       }
     }
     return undefined
   }
 
-  private moveLayerWith(
+  private findLayer(id: string): EditorObject | undefined {
+    const visit = (
+      objects: readonly FabricObject[],
+    ): EditorObject | undefined => {
+      for (const object of objects) {
+        const editorObject = this.normalizeEditorObject(object)
+        if (editorObject.editorId === id) {
+          return editorObject
+        }
+        if (object instanceof Group) {
+          const nested = visit(object.getObjects())
+          if (nested) return nested
+        }
+      }
+      return undefined
+    }
+    return visit(this.canvas.getObjects())
+  }
+
+  private persistentObjectOwner(object: FabricObject): Group | undefined {
+    const owner = object.group
+    return owner instanceof Group && !(owner instanceof ActiveSelection)
+      ? owner
+      : undefined
+  }
+
+  private topLevelStackUnits(): FabricObject[][] {
+    const objects = this.canvas.getObjects()
+    const contentsByOwner = new Map<FabricObject, FabricObject[]>()
+    const ownedContents = new Set<FabricObject>()
+    objects.forEach((object) => {
+      if ((object as EditorObject).editorKind === 'grid-cell-image') return
+      const contents = this.gridContentsOwnedBy([object])
+      if (contents.length === 0) return
+      const ordered = objects.filter((candidate) =>
+        contents.includes(candidate as EditorObject & FabricImage),
+      )
+      contentsByOwner.set(object, ordered)
+      ordered.forEach((content) => ownedContents.add(content))
+    })
+    return objects.flatMap((object) =>
+      ownedContents.has(object)
+        ? []
+        : [[object, ...(contentsByOwner.get(object) ?? [])]],
+    )
+  }
+
+  private applyTopLevelStackUnits(units: readonly FabricObject[][]): void {
+    units
+      .flat()
+      .forEach((object, index) => this.canvas.moveObjectTo(object, index))
+  }
+
+  private moveLayerInStack(
     id: string,
-    move: (object: FabricObject) => boolean,
+    direction: 'forward' | 'backward' | 'front' | 'back',
   ): boolean {
     const target = this.findLayer(id)
-    if (!target) {
-      return false
+    if (!target) return false
+    const owner = this.persistentObjectOwner(target)
+    if (owner) {
+      const siblings = owner.getObjects()
+      const sourceIndex = siblings.indexOf(target)
+      const targetIndex =
+        direction === 'front'
+          ? siblings.length - 1
+          : direction === 'back'
+            ? 0
+            : clamp(
+                sourceIndex + (direction === 'forward' ? 1 : -1),
+                0,
+                siblings.length - 1,
+              )
+      if (sourceIndex < 0 || sourceIndex === targetIndex) return false
+      this.mutate('layer', () => {
+        owner.moveObjectTo(target, targetIndex)
+        owner.triggerLayout()
+        owner.setCoords()
+      })
+      return true
     }
-    let moved = false
-    this.withSuppressedEvents(() => {
-      moved = move(target)
+
+    const units = this.topLevelStackUnits()
+    const sourceIndex = units.findIndex((unit) => unit.includes(target))
+    if (sourceIndex < 0) return false
+    const targetIndex =
+      direction === 'front'
+        ? units.length - 1
+        : direction === 'back'
+          ? 0
+          : clamp(
+              sourceIndex + (direction === 'forward' ? 1 : -1),
+              0,
+              units.length - 1,
+            )
+    if (sourceIndex === targetIndex) return false
+    this.mutate('layer', () => {
+      const [unit] = units.splice(sourceIndex, 1)
+      units.splice(targetIndex, 0, unit)
+      this.applyTopLevelStackUnits(units)
     })
-    if (!moved) {
-      return false
-    }
-    this.finishMutation('layer')
     return true
   }
 
@@ -3714,23 +5750,56 @@ export class FabricEditorEngine {
     }
   }
 
-  private preparePastedObject(
-    object: ClipboardObject,
+  private preparePastedObjects(
+    objects: ClipboardObject[],
     offset: number,
     reservedNames = this.layerNames(),
   ): void {
-    const originalName = this.requireEditorName(object)
-    object.editorId = createEditorId()
-    object.editorName = this.uniqueLayerName(
-      `${originalName} copy`,
-      reservedNames,
-    )
-    object.set({
-      left: object.left + offset,
-      top: object.top + offset,
+    const idMap = new Map<string, string>()
+    const assignIds = (object: EditorObject): void => {
+      const originalId = this.requireEditorId(object)
+      const frame = this.embeddedClipFrame(object)
+      const replacementId = createEditorId()
+      idMap.set(originalId, replacementId)
+      object.editorId = replacementId
+      if (object instanceof Group) {
+        object.getObjects().forEach((child) => assignIds(child as EditorObject))
+      }
+      if (frame) assignIds(frame)
+    }
+    const remapReferences = (object: EditorObject): void => {
+      if (object.editorGridCellId) {
+        object.editorGridCellId =
+          idMap.get(object.editorGridCellId) ?? object.editorGridCellId
+      }
+      if (object.editorClipFrameId) {
+        object.editorClipFrameId =
+          idMap.get(object.editorClipFrameId) ?? object.editorClipFrameId
+      }
+      if (object instanceof Group) {
+        object
+          .getObjects()
+          .forEach((child) => remapReferences(child as EditorObject))
+      }
+      const frame = this.embeddedClipFrame(object)
+      if (frame) remapReferences(frame)
+    }
+
+    objects.forEach(assignIds)
+    objects.forEach(remapReferences)
+    objects.forEach((object) => {
+      const originalName = this.requireEditorName(object)
+      object.editorName = this.uniqueLayerName(
+        `${originalName} copy`,
+        reservedNames,
+      )
+      object.set({
+        left: object.left + offset,
+        top: object.top + offset,
+      })
+      this.configureSingleObjectInteractivity(object)
+      object.setCoords()
     })
-    this.configureSingleObjectInteractivity(object)
-    object.setCoords()
   }
 
   private nextPasteOffset(
@@ -3788,6 +5857,9 @@ export class FabricEditorEngine {
       ? snapshot.json.objects
       : []
     const validatedAdvancedOperations = new Map<unknown, FilterOperation[]>()
+    const validatedChartModels = new Map<unknown, ChartModel>()
+    const validatedChartPalettes = new Map<unknown, string[]>()
+    const validatedTableModels = new Map<unknown, TableModel>()
     await Promise.all(
       serializedObjects.map(async (serialized, index) => {
         if (
@@ -3798,6 +5870,52 @@ export class FabricEditorEngine {
           return
         }
         const record = serialized as Record<string, unknown>
+        if (
+          record.editorChartModel !== undefined &&
+          record.editorTableModel !== undefined
+        ) {
+          throw new TypeError(
+            `objects[${index}] cannot be both a chart and a table.`,
+          )
+        }
+        if (
+          record.editorKind === 'chart' ||
+          record.editorChartModel !== undefined ||
+          record.editorChartPalette !== undefined
+        ) {
+          if (record.editorChartModel === undefined) {
+            throw new TypeError(
+              `objects[${index}] is missing its semantic chart model.`,
+            )
+          }
+          const charts = await import('../charts')
+          validatedChartModels.set(
+            serialized,
+            charts.parseChartModel(record.editorChartModel),
+          )
+          validatedChartPalettes.set(
+            serialized,
+            parseChartPalette(
+              record.editorChartPalette,
+              `objects[${index}].editorChartPalette`,
+            ),
+          )
+        }
+        if (
+          record.editorKind === 'table' ||
+          record.editorTableModel !== undefined
+        ) {
+          if (record.editorTableModel === undefined) {
+            throw new TypeError(
+              `objects[${index}] is missing its semantic table model.`,
+            )
+          }
+          const tables = await import('../tables')
+          validatedTableModels.set(
+            serialized,
+            tables.parseTableModel(record.editorTableModel),
+          )
+        }
         if (
           record.editorKind !== 'adjustment' ||
           record.editorFilterOperations === undefined
@@ -3840,6 +5958,22 @@ export class FabricEditorEngine {
             restoredNames,
           )
           editorObject.editorLocked = Boolean(record.editorLocked)
+          const chartModel = validatedChartModels.get(serialized)
+          if (chartModel) {
+            editorObject.editorKind = 'chart'
+            editorObject.editorChartModel = structuredClone(chartModel)
+            editorObject.editorChartPalette = [
+              ...(validatedChartPalettes.get(serialized) ?? []),
+            ]
+            delete editorObject.editorTableModel
+          }
+          const tableModel = validatedTableModels.get(serialized)
+          if (tableModel) {
+            editorObject.editorKind = 'table'
+            editorObject.editorTableModel = structuredClone(tableModel)
+            delete editorObject.editorChartModel
+            delete editorObject.editorChartPalette
+          }
           if (record.editorKind === 'adjustment') {
             if (!(object instanceof FabricImage)) {
               throw new TypeError(
@@ -3942,6 +6076,7 @@ export class FabricEditorEngine {
         options.viewportTransform ?? [...iMatrix],
       )
       this.configureObjectInteractivity()
+      this.syncGridCellContents()
       if (options.selectedEditorIds?.size) {
         this.activateObjects(
           prepared.objects.filter((object) =>
@@ -3984,9 +6119,13 @@ export class FabricEditorEngine {
     object.setCoords()
   }
 
-  private replaceClipboard(objects: ClipboardObject[]): void {
+  private replaceClipboard(
+    objects: ClipboardObject[],
+    primaryCount = objects.length,
+  ): void {
     const previous = this.clipboard
     this.clipboard = objects
+    this.clipboardPrimaryCount = Math.min(objects.length, primaryCount)
     this.pasteGeneration = 0
     this.disposeObjects(previous)
   }
@@ -4049,7 +6188,10 @@ export class FabricEditorEngine {
 
   private mutate(reason: EditorChangeReason, mutation: () => void): void {
     this.assertUsable()
-    this.withSuppressedEvents(mutation)
+    this.withSuppressedEvents(() => {
+      mutation()
+      this.syncGridCellContents()
+    })
     this.finishMutation(reason)
   }
 
@@ -4173,6 +6315,9 @@ export class FabricEditorEngine {
     const editorKind = (object as EditorObject).editorKind
     if (editorKind) {
       return editorKind
+    }
+    if (object instanceof Group) {
+      return 'group'
     }
     if (object instanceof FabricImage) {
       return 'image'

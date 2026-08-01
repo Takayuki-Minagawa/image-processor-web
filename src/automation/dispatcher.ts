@@ -17,6 +17,12 @@ export interface CommandExecutionContext {
   origin: CommandOrigin
   signal?: AbortSignal
   resultAliases: Map<string, unknown>
+  /**
+   * Set only by a caller that already owns the editor transaction. This lets
+   * compound commands participate in that transaction without re-entering the
+   * engine's top-level atomic queue.
+   */
+  withinAtomicTransaction?: boolean
 }
 
 export interface CommandExecutionResult {
@@ -32,6 +38,7 @@ export interface DispatchOptions {
   origin?: CommandOrigin
   signal?: AbortSignal
   resultAliases?: Map<string, unknown>
+  withinAtomicTransaction?: boolean
 }
 
 export interface DispatchedCommandEvent {
@@ -67,6 +74,7 @@ export class CommandDispatcher {
         origin,
         signal: options.signal,
         resultAliases: aliases,
+        withinAtomicTransaction: options.withinAtomicTransaction,
       })) ?? {}
     if (command.commandId) {
       aliases.set(command.commandId, outcome.result)

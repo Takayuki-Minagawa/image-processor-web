@@ -323,24 +323,54 @@ test.describe('Pixelweave editor', () => {
         const fallback = globalThis.localStorage.getItem(
           'image-processor-web:autosave:v1',
         );
+        const unwrapFallback = () => {
+          if (fallback === null) return null;
+          try {
+            const envelope = JSON.parse(fallback);
+            return envelope.autosaveFormat === 'image-processor-web/fallback'
+              ? envelope.projectSource
+              : fallback;
+          } catch {
+            return fallback;
+          }
+        };
         try {
           const root = await globalThis.navigator.storage.getDirectory();
           const handle = await root.getFileHandle(
             'autosave.image-processor-web.json',
           );
-          return await (await handle.getFile()).text();
+          const source = await (await handle.getFile()).text();
+          const manifest = JSON.parse(source);
+          if (manifest.autosaveFormat !== 'image-processor-web/page-delta') {
+            return source;
+          }
+          const pages = await Promise.all(
+            manifest.pages.map(async ({ fileName }) => {
+              const pageHandle = await root.getFileHandle(fileName);
+              return JSON.parse(await (await pageHandle.getFile()).text());
+            }),
+          );
+          return JSON.stringify({ ...manifest.project, pages });
         } catch {
-          return fallback;
+          return unwrapFallback();
         }
       })()`,
     )
     expect(autosavedSource).not.toBeNull()
     const autosaved = JSON.parse(autosavedSource!) as {
+      activePageId: string
       metadata: { name: string }
-      fabricCanvas: { objects: unknown[] }
+      pages: Array<{
+        id: string
+        fabricCanvas: { objects: unknown[] }
+      }>
     }
+    const autosavedActivePage = autosaved.pages.find(
+      ({ id }) => id === autosaved.activePageId,
+    )
     expect(autosaved.metadata.name).toBe('名称だけ変更')
-    expect(autosaved.fabricCanvas.objects).toHaveLength(1)
+    expect(autosavedActivePage).toBeDefined()
+    expect(autosavedActivePage!.fabricCanvas.objects).toHaveLength(1)
   })
 
   test('自動保存の検証失敗を処理し、具体的な上限理由を表示する', async ({
@@ -471,23 +501,30 @@ test.describe('Pixelweave editor', () => {
     ).toBeVisible()
 
     const timestamp = new Date().toISOString()
+    const oversizedProject = {
+      appId: 'image-processor-web',
+      schemaVersion: 4,
+      pages: [
+        {
+          id: 'page-1',
+          name: 'Page 1',
+          canvasSize: { width: 320, height: 100 },
+          fabricCanvas: { version: '7.4.0', objects: [] },
+          editorState: { guides: [], snapTolerance: 8 },
+        },
+      ],
+      activePageId: 'page-1',
+      metadata: {
+        name: '大きすぎるプロジェクト',
+        createdAt: timestamp,
+      },
+      updatedAt: timestamp,
+    }
+    oversizedProject.pages[0].canvasSize.width = 9_000
     await projectInput.setInputFiles({
       name: 'oversized.pwx.json',
       mimeType: 'application/json',
-      buffer: Buffer.from(
-        JSON.stringify({
-          appId: 'image-processor-web',
-          schemaVersion: 1,
-          canvasSize: { width: 9_000, height: 100 },
-          fabricCanvas: { objects: [] },
-          metadata: {
-            name: '大きすぎるプロジェクト',
-            createdAt: timestamp,
-          },
-          updatedAt: timestamp,
-        }),
-        'utf8',
-      ),
+      buffer: Buffer.from(JSON.stringify(oversizedProject), 'utf8'),
     })
     await expect(
       page.getByText(
@@ -594,17 +631,25 @@ test.describe('Pixelweave editor', () => {
     const projectPath = await download.path()
     expect(projectPath).not.toBeNull()
     const project = JSON.parse(await readFile(projectPath!, 'utf8')) as {
-      fabricCanvas: {
-        objects: Array<{
-          type: string
-          left: number
-          top: number
-          scaleX: number
-          scaleY: number
-        }>
-      }
+      activePageId: string
+      pages: Array<{
+        id: string
+        fabricCanvas: {
+          objects: Array<{
+            type: string
+            left: number
+            top: number
+            scaleX: number
+            scaleY: number
+          }>
+        }
+      }>
     }
-    const image = project.fabricCanvas.objects.find(
+    const savedActivePage = project.pages.find(
+      ({ id }) => id === project.activePageId,
+    )
+    expect(savedActivePage).toBeDefined()
+    const image = savedActivePage!.fabricCanvas.objects.find(
       (object) => object.type.toLowerCase() === 'image',
     )
     expect(image).toMatchObject({

@@ -81,6 +81,31 @@ const deferred = <T>(): {
   return { promise, resolve }
 }
 
+describe('FabricEditorEngine export multiplier safety', () => {
+  it('uses an exact multiplier above the interactive cap after validating output dimensions', async () => {
+    const engine = createEngine()
+    const toDataUrl = vi
+      .spyOn(engine.getCanvas(), 'toDataURL')
+      .mockReturnValue('data:image/png;base64,AA==')
+
+    await engine.exportDataUrl('png', 1, 16, {
+      exactSafeMultiplier: true,
+    })
+
+    expect(toDataUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ multiplier: 16 }),
+    )
+  })
+
+  it('rejects an exact export multiplier outside the shared raster budget', async () => {
+    const engine = createEngine()
+
+    await expect(
+      engine.exportDataUrl('png', 1, 50, { exactSafeMultiplier: true }),
+    ).rejects.toThrow(/safety limit/u)
+  })
+})
+
 describe('FabricEditorEngine top-left coordinates', () => {
   it('places generated rectangles, ellipses, and text at their requested bounds', () => {
     const engine = createEngine()
@@ -1157,6 +1182,65 @@ describe('FabricEditorEngine feature expansion', () => {
       }),
     ).rejects.toThrow('script failed')
     expect(engine.snapshot()).toEqual(before)
+  })
+
+  it('allows a nested atomic operation to join the active transaction', async () => {
+    const onChanged = vi.fn()
+    const engine = createEngine({ onChanged })
+    onChanged.mockClear()
+
+    await engine.runAtomic('macro', async () => {
+      engine.addRect({ name: 'Outer operation' })
+      await engine.runAtomic('asset', () => {
+        engine.addEllipse({ name: 'Nested operation' })
+      })
+    })
+
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Nested operation',
+      'Outer operation',
+    ])
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    expect(onChanged).toHaveBeenLastCalledWith('macro')
+  })
+
+  it('does not deadlock background image insertion inside an atomic operation', async () => {
+    const engine = createEngine()
+    vi.spyOn(engine, 'importImage').mockResolvedValue('background-layer')
+
+    await expect(
+      engine.runAtomic('background-removal', () =>
+        engine.addImageDataLayer({
+          width: 4,
+          height: 4,
+          data: new Uint8ClampedArray(4 * 4 * 4).fill(255),
+        }),
+      ),
+    ).resolves.toBe('background-layer')
+  })
+
+  it('isolates concurrent atomic operations across a rollback', async () => {
+    const engine = createEngine()
+    const gate = deferred<void>()
+    const first = engine.runAtomic('macro', async () => {
+      engine.addRect({ name: 'Will roll back' })
+      await gate.promise
+      throw new Error('first operation failed')
+    })
+    const second = engine.runAtomic('script', () => {
+      engine.addEllipse({ name: 'Independent operation' })
+    })
+
+    await Promise.resolve()
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Will roll back',
+    ])
+    gate.resolve()
+    await expect(first).rejects.toThrow('first operation failed')
+    await expect(second).resolves.toBeUndefined()
+    expect(engine.getLayers().map(({ name }) => name)).toEqual([
+      'Independent operation',
+    ])
   })
 
   it('persists an immutable pixel selection and clears it after resizing', () => {

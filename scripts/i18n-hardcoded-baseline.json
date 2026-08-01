@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": {
+    "src/EditorApplication.tsx": {
+      "count": 281,
+      "sha256": "33f859ff4f701e545838f878e3a98e9e5b0c107df0af9f0fcb9f56e98f230780"
+    },
+    "src/components/ErrorBoundary.tsx": {
+      "count": 4,
+      "sha256": "3bd662ee86cdc37d293fd49fdb9ed989b0020cf95683c02ae42794c0a7373844"
+    },
+    "src/components/ManualContent.tsx": {
+      "count": 10,
+      "sha256": "e989b7c744f18beabe3a38a442ccab2f6d88972e30ac558eac8fb88608f7fa7d"
+    }
+  }
+}

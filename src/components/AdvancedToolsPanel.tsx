@@ -43,6 +43,12 @@ import {
   type ScriptRepository,
 } from '../scripting'
 import type { EditorScriptCommand } from '../scripting/types'
+import {
+  formatStudioMessage,
+  getStudioComponentCopy,
+  type StudioComponentCopy,
+} from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
 
 type AdvancedToolsTab = 'selection' | 'background' | 'script'
 
@@ -78,6 +84,7 @@ export interface AdvancedToolsPanelProps {
   backgroundModel?: AdvancedBackgroundModel
   scriptRepository?: ScriptRepository
   macroRepository?: MacroRepository
+  locale?: AppLocale
 }
 
 const TAB_ORDER: readonly AdvancedToolsTab[] = [
@@ -85,12 +92,6 @@ const TAB_ORDER: readonly AdvancedToolsTab[] = [
   'background',
   'script',
 ]
-
-const TAB_LABELS: Record<AdvancedToolsTab, string> = {
-  selection: '選択範囲',
-  background: '背景除去',
-  script: 'スクリプト',
-}
 
 const SCRIPT_EXAMPLES = {
   resize: `editor.resize(1200, 630);`,
@@ -106,8 +107,10 @@ const SCRIPT_EXAMPLES = {
 });`,
 } as const
 
-const formatBytes = (bytes: number): string => {
-  if (!Number.isFinite(bytes) || bytes < 0) return 'サイズ不明'
+type AdvancedToolsCopy = StudioComponentCopy['advancedTools']
+
+const formatBytes = (bytes: number, copy: AdvancedToolsCopy): string => {
+  if (!Number.isFinite(bytes) || bytes < 0) return copy.unknownSize
   if (bytes < 1024) return `${Math.round(bytes)} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -142,23 +145,27 @@ const parseInteger = (
   minimum: number,
   maximum: number,
   label: string,
+  copy: AdvancedToolsCopy,
 ): number => {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
     throw new RangeError(
-      `${label}は${minimum}から${maximum}までの整数で指定してください。`,
+      formatStudioMessage(copy.integerRange, { label, minimum, maximum }),
     )
   }
   return parsed
 }
 
-const parsePolygonPoints = (source: string): SelectionPoint[] => {
+const parsePolygonPoints = (
+  source: string,
+  copy: AdvancedToolsCopy,
+): SelectionPoint[] => {
   const lines = source
     .split(/\r?\n|;/)
     .map((line) => line.trim())
     .filter(Boolean)
   if (lines.length < 3 || lines.length > 10_000) {
-    throw new RangeError('多角形には3点以上10,000点以下が必要です。')
+    throw new RangeError(copy.polygonPointRange)
   }
   return lines.map((line, index) => {
     const match = line.match(
@@ -166,13 +173,15 @@ const parsePolygonPoints = (source: string): SelectionPoint[] => {
     )
     if (!match) {
       throw new RangeError(
-        `${index + 1}行目を「X,Y」の形式で入力してください。`,
+        formatStudioMessage(copy.polygonLineFormat, { line: index + 1 }),
       )
     }
     const x = Number(match[1])
     const y = Number(match[2])
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      throw new RangeError(`${index + 1}行目の座標が不正です。`)
+      throw new RangeError(
+        formatStudioMessage(copy.polygonInvalidCoordinate, { line: index + 1 }),
+      )
     }
     return { x, y }
   })
@@ -191,7 +200,14 @@ export function AdvancedToolsPanel({
   backgroundModel,
   scriptRepository: suppliedScriptRepository,
   macroRepository: suppliedMacroRepository,
+  locale = 'ja',
 }: AdvancedToolsPanelProps) {
+  const copy = getStudioComponentCopy(locale).advancedTools
+  const tabLabels: Record<AdvancedToolsTab, string> = {
+    selection: copy.tabSelection,
+    background: copy.tabBackground,
+    script: copy.tabScript,
+  }
   const id = useId()
   const [activeTab, setActiveTab] = useState<AdvancedToolsTab>('selection')
   const tabRefs = useRef<Partial<Record<AdvancedToolsTab, HTMLButtonElement>>>(
@@ -199,7 +215,7 @@ export function AdvancedToolsPanel({
   )
   const [status, setStatus] = useState<AdvancedToolsStatus>({
     kind: 'info',
-    message: '高度ツールの準備ができました。',
+    message: copy.ready,
   })
 
   const [combineMode, setCombineMode] =
@@ -236,7 +252,7 @@ export function AdvancedToolsPanel({
     scriptRepository.list(),
   )
   const [selectedScriptId, setSelectedScriptId] = useState('')
-  const [scriptName, setScriptName] = useState('新しいスクリプト')
+  const [scriptName, setScriptName] = useState(copy.newScript)
 
   useEffect(() => {
     if (activeTab !== 'selection') return
@@ -290,9 +306,7 @@ export function AdvancedToolsPanel({
       image.height !== documentHeight ||
       image.data.length !== documentWidth * documentHeight * 4
     ) {
-      throw new RangeError(
-        '取得した画像データの寸法がドキュメントと一致しません。',
-      )
+      throw new RangeError(copy.imageDimensionMismatch)
     }
     return {
       width: image.width,
@@ -307,9 +321,7 @@ export function AdvancedToolsPanel({
       (selectionMask.width !== documentWidth ||
         selectionMask.height !== documentHeight)
     ) {
-      throw new RangeError(
-        '現在の選択マスクの寸法がドキュメントと一致しません。',
-      )
+      throw new RangeError(copy.currentMaskDimensionMismatch)
     }
     return selectionMask
   }
@@ -322,9 +334,7 @@ export function AdvancedToolsPanel({
       incoming.width !== documentWidth ||
       incoming.height !== documentHeight
     ) {
-      throw new RangeError(
-        '新しい選択マスクの寸法がドキュメントと一致しません。',
-      )
+      throw new RangeError(copy.incomingMaskDimensionMismatch)
     }
     const current = checkedCurrentMask()
     const next =
@@ -342,9 +352,27 @@ export function AdvancedToolsPanel({
     if (selectionBusy) return
     setSelectionBusy(true)
     try {
-      const x = parseInteger(wandX, 0, documentWidth - 1, 'X座標')
-      const y = parseInteger(wandY, 0, documentHeight - 1, 'Y座標')
-      const tolerance = parseInteger(wandTolerance, 0, 255, '許容値')
+      const x = parseInteger(
+        wandX,
+        0,
+        documentWidth - 1,
+        copy.xCoordinate,
+        copy,
+      )
+      const y = parseInteger(
+        wandY,
+        0,
+        documentHeight - 1,
+        copy.yCoordinate,
+        copy,
+      )
+      const tolerance = parseInteger(
+        wandTolerance,
+        0,
+        255,
+        copy.tolerance,
+        copy,
+      )
       const image = await documentPixels()
       const incoming =
         typeof Worker === 'undefined'
@@ -381,15 +409,12 @@ export function AdvancedToolsPanel({
       emitIncomingMask(incoming)
       report({
         kind: 'success',
-        message: '自動選択を更新しました。',
+        message: copy.magicWandUpdated,
       })
     } catch (error) {
       report({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '自動選択を完了できませんでした。',
+        message: error instanceof Error ? error.message : copy.magicWandFailed,
       })
     } finally {
       setSelectionBusy(false)
@@ -411,10 +436,7 @@ export function AdvancedToolsPanel({
       emitIncomingMask(incoming, mode)
       report({
         kind: 'success',
-        message:
-          source === 'lasso'
-            ? 'なげなわ選択を更新しました。'
-            : '多角形選択を更新しました。',
+        message: source === 'lasso' ? copy.lassoUpdated : copy.polygonUpdated,
       })
     } catch (error) {
       report({
@@ -423,22 +445,19 @@ export function AdvancedToolsPanel({
           error instanceof Error
             ? error.message
             : source === 'lasso'
-              ? 'なげなわ選択を完了できませんでした。'
-              : '多角形選択を完了できませんでした。',
+              ? copy.lassoFailed
+              : copy.polygonFailed,
       })
     }
   }
 
   const runPolygon = (): void => {
     try {
-      applyPolygonSelection(parsePolygonPoints(polygonPoints), 'polygon')
+      applyPolygonSelection(parsePolygonPoints(polygonPoints, copy), 'polygon')
     } catch (error) {
       report({
         kind: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : '多角形選択を完了できませんでした。',
+        message: error instanceof Error ? error.message : copy.polygonFailed,
       })
     }
   }
@@ -461,26 +480,26 @@ export function AdvancedToolsPanel({
     try {
       const current = checkedCurrentMask()
       if (!current) {
-        throw new Error('先に選択範囲を作成してください。')
+        throw new Error(copy.selectionRequired)
       }
       let next: SelectionMask
       switch (operation) {
         case 'feather':
           next = featherSelectionMask(
             current,
-            parseInteger(selectionRadius, 0, 256, '調整半径'),
+            parseInteger(selectionRadius, 0, 256, copy.adjustmentRadius, copy),
           )
           break
         case 'grow':
           next = dilateSelectionMask(
             current,
-            parseInteger(selectionRadius, 0, 128, '調整半径'),
+            parseInteger(selectionRadius, 0, 128, copy.adjustmentRadius, copy),
           )
           break
         case 'shrink':
           next = erodeSelectionMask(
             current,
-            parseInteger(selectionRadius, 0, 128, '調整半径'),
+            parseInteger(selectionRadius, 0, 128, copy.adjustmentRadius, copy),
           )
           break
         case 'invert':
@@ -490,15 +509,13 @@ export function AdvancedToolsPanel({
       onSelectionMask(next)
       report({
         kind: 'success',
-        message: '選択範囲を調整しました。',
+        message: copy.selectionAdjusted,
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
-          error instanceof Error
-            ? error.message
-            : '選択範囲を調整できませんでした。',
+          error instanceof Error ? error.message : copy.selectionAdjustFailed,
       })
     }
   }
@@ -508,7 +525,7 @@ export function AdvancedToolsPanel({
     if (useModel && (!backgroundModel || !modelConsent)) {
       report({
         kind: 'error',
-        message: 'ローカルAIモデルを使うには明示的な同意が必要です。',
+        message: copy.modelConsentRequired,
       })
       return
     }
@@ -608,22 +625,22 @@ export function AdvancedToolsPanel({
         kind: result.warning ? 'warning' : 'success',
         message:
           result.source === 'model'
-            ? 'ローカルAIモデルで背景を除去しました。'
+            ? copy.backgroundRemovedModel
             : result.warning
-              ? `モデル処理に失敗したため簡易推定を使用しました。${result.warning}`
-              : 'モデルを使わない簡易推定で背景を除去しました。',
+              ? formatStudioMessage(copy.backgroundFallbackWarning, {
+                  warning: result.warning,
+                })
+              : copy.backgroundRemovedHeuristic,
       })
     } catch (error) {
       if (!isCurrentGeneration()) return
       report(
         abortError(error)
-          ? { kind: 'info', message: '背景除去をキャンセルしました。' }
+          ? { kind: 'info', message: copy.backgroundCancelled }
           : {
               kind: 'error',
               message:
-                error instanceof Error
-                  ? error.message
-                  : '背景除去を完了できませんでした。',
+                error instanceof Error ? error.message : copy.backgroundFailed,
             },
       )
     } finally {
@@ -645,15 +662,17 @@ export function AdvancedToolsPanel({
       setModelConsent(false)
       report({
         kind: 'success',
-        message: '実行同意を取り消し、端末内モデルキャッシュを削除しました。',
+        message: copy.modelCacheDeleted,
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
           error instanceof Error
-            ? `モデルデータを削除できませんでした: ${error.message}`
-            : 'モデルデータを削除できませんでした。',
+            ? formatStudioMessage(copy.modelCacheDeleteFailedDetail, {
+                message: error.message,
+              })
+            : copy.modelCacheDeleteFailed,
       })
     } finally {
       setModelStorageBusy(false)
@@ -684,16 +703,22 @@ export function AdvancedToolsPanel({
       report({
         kind: result.persisted ? 'success' : 'warning',
         message: result.persisted
-          ? `スクリプト「${result.script.name}」を端末へ保存しました。`
-          : `スクリプト「${result.script.name}」をこのセッションへ保存しました。`,
+          ? formatStudioMessage(copy.scriptSavedDevice, {
+              name: result.script.name,
+            })
+          : formatStudioMessage(copy.scriptSavedSession, {
+              name: result.script.name,
+            }),
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
           error instanceof Error
-            ? `スクリプトを保存できませんでした: ${error.message}`
-            : 'スクリプトを保存できませんでした。',
+            ? formatStudioMessage(copy.scriptSaveFailedDetail, {
+                message: error.message,
+              })
+            : copy.scriptSaveFailed,
       })
     }
   }
@@ -703,7 +728,7 @@ export function AdvancedToolsPanel({
     if (!entry) {
       report({
         kind: 'warning',
-        message: '読み込む保存済みスクリプトを選択してください。',
+        message: copy.selectScriptToLoad,
       })
       return
     }
@@ -711,7 +736,9 @@ export function AdvancedToolsPanel({
     setScript(entry.script.source)
     report({
       kind: 'success',
-      message: `スクリプト「${entry.script.name}」を読み込みました。`,
+      message: formatStudioMessage(copy.scriptLoaded, {
+        name: entry.script.name,
+      }),
     })
   }
 
@@ -720,7 +747,7 @@ export function AdvancedToolsPanel({
     if (!entry || !scriptRepository.remove(selectedScriptId)) {
       report({
         kind: 'warning',
-        message: '削除する保存済みスクリプトを選択してください。',
+        message: copy.selectScriptToDelete,
       })
       return
     }
@@ -728,7 +755,9 @@ export function AdvancedToolsPanel({
     refreshSavedScripts()
     report({
       kind: 'success',
-      message: `スクリプト「${entry.script.name}」を削除しました。`,
+      message: formatStudioMessage(copy.scriptDeleted, {
+        name: entry.script.name,
+      }),
     })
   }
 
@@ -737,7 +766,7 @@ export function AdvancedToolsPanel({
     if (!entry) {
       report({
         kind: 'warning',
-        message: 'マクロへ登録する保存済みスクリプトを選択してください。',
+        message: copy.selectScriptToRegister,
       })
       return
     }
@@ -756,15 +785,19 @@ export function AdvancedToolsPanel({
       onMacroRegistered?.({ macro, diagnostics: [] })
       report({
         kind: 'success',
-        message: `スクリプト「${entry.script.name}」をマクロへ登録しました。`,
+        message: formatStudioMessage(copy.scriptRegistered, {
+          name: entry.script.name,
+        }),
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
           error instanceof Error
-            ? `マクロへ登録できませんでした: ${error.message}`
-            : 'マクロへ登録できませんでした。',
+            ? formatStudioMessage(copy.registerFailedDetail, {
+                message: error.message,
+              })
+            : copy.registerFailed,
       })
     }
   }
@@ -775,15 +808,15 @@ export function AdvancedToolsPanel({
       onScriptCommands(program.commands)
       report({
         kind: 'success',
-        message: `${program.commands.length}件の安全なコマンドを作成しました。`,
+        message: formatStudioMessage(copy.commandsCreated, {
+          count: program.commands.length,
+        }),
       })
     } catch (error) {
       report({
         kind: 'error',
         message:
-          error instanceof Error
-            ? error.message
-            : 'スクリプトを解析できませんでした。',
+          error instanceof Error ? error.message : copy.scriptParseFailed,
       })
     }
   }
@@ -821,10 +854,10 @@ export function AdvancedToolsPanel({
     <section className="advanced-tools-panel" aria-labelledby={`${id}-title`}>
       <header>
         <p>LOCAL ADVANCED TOOLS</p>
-        <h2 id={`${id}-title`}>高度ツール</h2>
+        <h2 id={`${id}-title`}>{copy.heading}</h2>
       </header>
 
-      <div role="tablist" aria-label="高度ツールのカテゴリ">
+      <div role="tablist" aria-label={copy.tabList}>
         {TAB_ORDER.map((tab) => (
           <button
             key={tab}
@@ -840,7 +873,7 @@ export function AdvancedToolsPanel({
             onClick={() => setActiveTab(tab)}
             onKeyDown={(event) => handleTabKey(event, tab)}
           >
-            {TAB_LABELS[tab]}
+            {tabLabels[tab]}
           </button>
         ))}
       </div>
@@ -851,30 +884,28 @@ export function AdvancedToolsPanel({
           role="tabpanel"
           aria-labelledby={`${id}-selection-tab`}
         >
-          <h3>選択マスク</h3>
-          <p>
-            8bitの選択マスクをドキュメント座標で作成します。画像データは端末外へ送信しません。
-          </p>
+          <h3>{copy.selectionHeading}</h3>
+          <p>{copy.selectionDescription}</p>
 
           <label>
-            <span>選択範囲の合成方法</span>
+            <span>{copy.combineMethod}</span>
             <select
               value={combineMode}
               onChange={(event) =>
                 setCombineMode(event.target.value as SelectionCombineMode)
               }
             >
-              <option value="replace">置き換え</option>
-              <option value="add">追加</option>
-              <option value="subtract">除外</option>
-              <option value="intersect">交差</option>
+              <option value="replace">{copy.replace}</option>
+              <option value="add">{copy.add}</option>
+              <option value="subtract">{copy.subtract}</option>
+              <option value="intersect">{copy.intersect}</option>
             </select>
           </label>
 
           <fieldset>
-            <legend>自動選択（マジックワンド）</legend>
+            <legend>{copy.magicWand}</legend>
             <label>
-              <span>X座標</span>
+              <span>{copy.xCoordinate}</span>
               <input
                 type="number"
                 min="0"
@@ -884,7 +915,7 @@ export function AdvancedToolsPanel({
               />
             </label>
             <label>
-              <span>Y座標</span>
+              <span>{copy.yCoordinate}</span>
               <input
                 type="number"
                 min="0"
@@ -894,7 +925,7 @@ export function AdvancedToolsPanel({
               />
             </label>
             <label>
-              <span>許容値</span>
+              <span>{copy.tolerance}</span>
               <input
                 type="number"
                 min="0"
@@ -908,28 +939,29 @@ export function AdvancedToolsPanel({
               disabled={selectionBusy}
               onClick={() => void runMagicWand()}
             >
-              {selectionBusy ? '選択中…' : '自動選択を実行'}
+              {selectionBusy ? copy.selecting : copy.runMagicWand}
             </button>
           </fieldset>
 
           <fieldset>
-            <legend>多角形・なげなわ選択</legend>
+            <legend>{copy.polygonAndLasso}</legend>
             <LassoSelectionCanvas
               documentWidth={documentWidth}
               documentHeight={documentHeight}
               previewImage={selectionPreview}
               selectionMask={selectionMask}
               disabled={selectionBusy}
+              locale={locale}
               onComplete={runLasso}
               onIncomplete={() =>
                 report({
                   kind: 'info',
-                  message: 'なげなわ選択には3点以上の軌跡が必要です。',
+                  message: copy.lassoNeedsPoints,
                 })
               }
             />
             <label>
-              <span>頂点座標（1行にX,Y）</span>
+              <span>{copy.vertexCoordinates}</span>
               <textarea
                 rows={6}
                 value={polygonPoints}
@@ -937,14 +969,14 @@ export function AdvancedToolsPanel({
               />
             </label>
             <button type="button" onClick={runPolygon}>
-              多角形選択を実行
+              {copy.runPolygon}
             </button>
           </fieldset>
 
           <fieldset>
-            <legend>選択範囲の調整</legend>
+            <legend>{copy.adjustSelection}</legend>
             <label>
-              <span>調整半径</span>
+              <span>{copy.adjustmentRadius}</span>
               <input
                 type="number"
                 min="0"
@@ -953,27 +985,27 @@ export function AdvancedToolsPanel({
                 onChange={(event) => setSelectionRadius(event.target.value)}
               />
             </label>
-            <div role="group" aria-label="選択範囲の調整操作">
+            <div role="group" aria-label={copy.adjustmentActions}>
               <button
                 type="button"
                 onClick={() => transformSelection('feather')}
               >
-                ぼかす
+                {copy.feather}
               </button>
               <button type="button" onClick={() => transformSelection('grow')}>
-                拡張
+                {copy.grow}
               </button>
               <button
                 type="button"
                 onClick={() => transformSelection('shrink')}
               >
-                縮小
+                {copy.shrink}
               </button>
               <button
                 type="button"
                 onClick={() => transformSelection('invert')}
               >
-                反転
+                {copy.invert}
               </button>
               <button
                 type="button"
@@ -981,11 +1013,11 @@ export function AdvancedToolsPanel({
                   onSelectionMask(undefined)
                   report({
                     kind: 'success',
-                    message: '選択範囲を解除しました。',
+                    message: copy.selectionCleared,
                   })
                 }}
               >
-                解除
+                {copy.clear}
               </button>
             </div>
           </fieldset>
@@ -998,18 +1030,17 @@ export function AdvancedToolsPanel({
           role="tabpanel"
           aria-labelledby={`${id}-background-tab`}
         >
-          <h3>ローカル背景除去</h3>
-          <p>
-            処理対象の画像は端末内だけで扱います。簡易推定は外周色を基準にするため、AIモデルと同等の品質ではありません。
-          </p>
+          <h3>{copy.backgroundHeading}</h3>
+          <p>{copy.backgroundDescription}</p>
 
           {backgroundModel ? (
             <fieldset>
-              <legend>ローカルAIモデル</legend>
+              <legend>{copy.localModel}</legend>
               <p>
-                {backgroundModel.label}（
-                {formatBytes(backgroundModel.sizeBytes)}
-                ）を必要時に読み込みます。
+                {formatStudioMessage(copy.modelDescription, {
+                  label: backgroundModel.label,
+                  size: formatBytes(backgroundModel.sizeBytes, copy),
+                })}
               </p>
               <label>
                 <input
@@ -1017,7 +1048,7 @@ export function AdvancedToolsPanel({
                   checked={useModel}
                   onChange={(event) => setUseModel(event.target.checked)}
                 />
-                ローカルAIモデルを使用する
+                {copy.useLocalModel}
               </label>
               {useModel ? (
                 <label>
@@ -1027,7 +1058,7 @@ export function AdvancedToolsPanel({
                     disabled={backgroundBusy}
                     onChange={(event) => setModelConsent(event.target.checked)}
                   />
-                  表示されたモデルを端末内で取得・実行することに同意する
+                  {copy.modelConsent}
                 </label>
               ) : null}
               <label>
@@ -1038,35 +1069,31 @@ export function AdvancedToolsPanel({
                     setAllowModelFallback(event.target.checked)
                   }
                 />
-                モデル処理に失敗した場合、簡易推定へ切り替える
+                {copy.allowFallback}
               </label>
               {backgroundModel.revoke ? (
                 <div>
-                  <p aria-live="polite">
-                    実行同意は保存されず、背景除去の実行後に解除されます。取得済みモデルキャッシュはオフライン再利用のため端末内に保持され、ここから削除できます。
-                  </p>
+                  <p aria-live="polite">{copy.consentAndCacheDescription}</p>
                   <button
                     type="button"
                     disabled={backgroundBusy || modelStorageBusy}
                     onClick={() => void clearBackgroundModelStorage()}
                   >
                     {modelStorageBusy
-                      ? 'モデルデータを削除中…'
-                      : '同意とモデルキャッシュを削除'}
+                      ? copy.deletingModel
+                      : copy.deleteConsentAndCache}
                   </button>
                 </div>
               ) : null}
             </fieldset>
           ) : (
-            <p>
-              AIモデルは設定されていません。モデルを取得せず、決定的な簡易推定を使用します。
-            </p>
+            <p>{copy.noModel}</p>
           )}
 
           {backgroundBusy ? (
             <div>
               <progress
-                aria-label="背景除去の進捗"
+                aria-label={copy.backgroundProgress}
                 max="1"
                 value={backgroundProgress}
               />
@@ -1074,7 +1101,7 @@ export function AdvancedToolsPanel({
                 type="button"
                 onClick={() => backgroundAbortRef.current?.abort()}
               >
-                背景除去をキャンセル
+                {copy.cancelBackground}
               </button>
             </div>
           ) : (
@@ -1083,7 +1110,7 @@ export function AdvancedToolsPanel({
               disabled={useModel && (!backgroundModel || !modelConsent)}
               onClick={() => void runBackgroundRemoval()}
             >
-              背景を除去
+              {copy.removeBackground}
             </button>
           )}
         </div>
@@ -1095,16 +1122,16 @@ export function AdvancedToolsPanel({
           role="tabpanel"
           aria-labelledby={`${id}-script-tab`}
         >
-          <h3>安全なスクリプト</h3>
+          <h3>{copy.scriptHeading}</h3>
           <p>
-            スクリプトは実行せず、許可された
-            <code>editor.*</code>
-            呼び出しだけをコマンドへ変換します。
-            <code>fetch</code>、<code>document</code>
-            、グローバル参照、任意の式やループは拒否されます。
+            {copy.scriptDescriptionBefore} <code>editor.*</code>
+            {copy.scriptDescriptionMiddle} <code>fetch</code>
+            {copy.scriptCodeSeparator}
+            <code>document</code>
+            {copy.scriptDescriptionAfter}
           </p>
           <label>
-            <span>スクリプト例</span>
+            <span>{copy.scriptExample}</span>
             <select
               defaultValue="filter"
               onChange={(event) =>
@@ -1115,21 +1142,21 @@ export function AdvancedToolsPanel({
                 )
               }
             >
-              <option value="resize">キャンバスをリサイズ</option>
-              <option value="watermark">テキストを追加</option>
-              <option value="filter">フィルターを適用</option>
-              <option value="layers">全レイヤーへ適用</option>
+              <option value="resize">{copy.exampleResize}</option>
+              <option value="watermark">{copy.exampleWatermark}</option>
+              <option value="filter">{copy.exampleFilter}</option>
+              <option value="layers">{copy.exampleLayers}</option>
             </select>
           </label>
           <fieldset>
-            <legend>保存スクリプト</legend>
+            <legend>{copy.savedScriptGroup}</legend>
             <label>
-              <span>保存済みスクリプト</span>
+              <span>{copy.savedScripts}</span>
               <select
                 value={selectedScriptId}
                 onChange={(event) => setSelectedScriptId(event.target.value)}
               >
-                <option value="">選択してください</option>
+                <option value="">{copy.select}</option>
                 {savedScripts.map(({ script: saved }) => (
                   <option key={saved.id} value={saved.id}>
                     {saved.name}
@@ -1138,42 +1165,42 @@ export function AdvancedToolsPanel({
               </select>
             </label>
             <label>
-              <span>スクリプト名</span>
+              <span>{copy.scriptName}</span>
               <input
                 value={scriptName}
                 maxLength={128}
                 onChange={(event) => setScriptName(event.target.value)}
               />
             </label>
-            <div role="group" aria-label="保存スクリプトの操作">
+            <div role="group" aria-label={copy.savedScriptActions}>
               <button type="button" onClick={saveScript}>
-                保存
+                {copy.save}
               </button>
               <button
                 type="button"
                 disabled={!selectedScriptId}
                 onClick={loadSelectedScript}
               >
-                読み込み
+                {copy.load}
               </button>
               <button
                 type="button"
                 disabled={!selectedScriptId}
                 onClick={deleteSelectedScript}
               >
-                削除
+                {copy.delete}
               </button>
               <button
                 type="button"
                 disabled={!selectedScriptId}
                 onClick={registerSelectedScriptAsMacro}
               >
-                マクロへ登録
+                {copy.registerMacro}
               </button>
             </div>
           </fieldset>
           <label>
-            <span>エディタースクリプト</span>
+            <span>{copy.editorScript}</span>
             <textarea
               rows={12}
               spellCheck={false}
@@ -1182,7 +1209,7 @@ export function AdvancedToolsPanel({
             />
           </label>
           <button type="button" onClick={runScript}>
-            安全性を確認して実行
+            {copy.verifyAndRun}
           </button>
         </div>
       ) : null}

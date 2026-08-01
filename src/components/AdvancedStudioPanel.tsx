@@ -9,6 +9,11 @@ import type { FilterOperation, PixelBuffer } from '../editor/filters/types'
 import type { SelectionMask } from '../selection/mask'
 import type { EditorScriptCommand } from '../scripting/types'
 import {
+  getStudioComponentCopy,
+  type StudioComponentCopy,
+} from '../i18n.studio-components'
+import type { AppLocale } from '../uiPreferences'
+import {
   AdvancedFilterPanel,
   type AdvancedFilterPanelStatus,
   type AdvancedFilterPreview,
@@ -29,7 +34,12 @@ const throwIfPreviewAborted = (signal: AbortSignal): void => {
   }
 }
 
-const resizePreviewSource = (source: ImageData): ImageData => {
+type AdvancedStudioCopy = StudioComponentCopy['advancedStudio']
+
+const resizePreviewSource = (
+  source: ImageData,
+  copy: AdvancedStudioCopy,
+): ImageData => {
   const scale = Math.min(
     1,
     FILTER_PREVIEW_MAX_DIMENSION / Math.max(source.width, source.height),
@@ -41,7 +51,7 @@ const resizePreviewSource = (source: ImageData): ImageData => {
   sourceCanvas.height = source.height
   const sourceContext = sourceCanvas.getContext('2d')
   if (!sourceContext) {
-    throw new Error('プレビュー元画像を作成できませんでした。')
+    throw new Error(copy.previewSourceCanvasFailed)
   }
   sourceContext.putImageData(source, 0, 0)
 
@@ -52,7 +62,7 @@ const resizePreviewSource = (source: ImageData): ImageData => {
     willReadFrequently: true,
   })
   if (!previewContext) {
-    throw new Error('フィルタープレビュー用Canvasを作成できませんでした。')
+    throw new Error(copy.previewCanvasFailed)
   }
   previewContext.imageSmoothingEnabled = true
   previewContext.imageSmoothingQuality = 'high'
@@ -64,12 +74,13 @@ const renderAdvancedFilterPreview = async (
   getDocumentImageData: () => Promise<ImageData>,
   operations: readonly FilterOperation[],
   signal: AbortSignal,
+  copy: AdvancedStudioCopy,
 ): Promise<AdvancedFilterPreview> => {
   if (operations.length > 64) {
-    throw new RangeError('プレビューできるフィルターは64件までです。')
+    throw new RangeError(copy.tooManyPreviewFilters)
   }
   throwIfPreviewAborted(signal)
-  const before = resizePreviewSource(await getDocumentImageData())
+  const before = resizePreviewSource(await getDocumentImageData(), copy)
   throwIfPreviewAborted(signal)
   const input: PixelBuffer = {
     width: before.width,
@@ -99,7 +110,7 @@ const renderAdvancedFilterPreview = async (
   const canvas = document.createElement('canvas')
   const context = canvas.getContext('2d')
   if (!context) {
-    throw new Error('フィルタープレビュー画像を作成できませんでした。')
+    throw new Error(copy.previewImageFailed)
   }
   const after = context.createImageData(filtered.width, filtered.height)
   after.data.set(filtered.data)
@@ -163,6 +174,7 @@ export interface AdvancedStudioPanelProps {
     operations: FilterOperation[],
   ): void | Promise<void>
   onStatus?(status: AdvancedFilterPanelStatus | AdvancedToolsStatus): void
+  locale?: AppLocale
 }
 
 export function AdvancedStudioPanel({
@@ -179,19 +191,27 @@ export function AdvancedStudioPanel({
   onAddAdvancedAdjustment,
   onUpdateAdvancedAdjustment,
   onStatus,
+  locale = 'ja',
 }: AdvancedStudioPanelProps) {
+  const copy = getStudioComponentCopy(locale).advancedStudio
   return (
     <>
       <AdvancedFilterPanel
         initialOperations={advancedAdjustment?.operations}
         editingAdjustmentId={advancedAdjustment?.id}
         renderPreview={(operations, signal) =>
-          renderAdvancedFilterPreview(getDocumentImageData, operations, signal)
+          renderAdvancedFilterPreview(
+            getDocumentImageData,
+            operations,
+            signal,
+            copy,
+          )
         }
         onApply={onApplyFilters}
         onAddAdjustment={onAddAdvancedAdjustment}
         onUpdateAdjustment={onUpdateAdvancedAdjustment}
         onStatus={onStatus}
+        locale={locale}
       />
       <AdvancedToolsPanel
         documentWidth={documentWidth}
@@ -204,6 +224,7 @@ export function AdvancedStudioPanel({
         onScriptCommands={onScriptCommands}
         onMacroRegistered={onMacroRegistered}
         onStatus={onStatus}
+        locale={locale}
       />
     </>
   )

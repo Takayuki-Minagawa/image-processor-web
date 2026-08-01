@@ -9,6 +9,8 @@ const isGitHubPages = process.env.GITHUB_ACTIONS === 'true'
 const buildId = process.env.GITHUB_SHA?.slice(0, 12) ?? Date.now().toString(36)
 const isDeferredOnnxRuntimeAsset = (file: string): boolean =>
   /(?:^|\/)ort(?:[.-]).*\.(?:js|wasm)$/u.test(file)
+const isDeferredJapaneseFontAsset = (file: string): boolean =>
+  /(?:^|\/)noto-(?:sans|serif)-jp.*\.woff2$/u.test(file)
 
 const listFiles = async (
   directory: string,
@@ -40,7 +42,10 @@ export default defineConfig({
         const source = await readFile(serviceWorkerPath, 'utf8')
         const precacheUrls = (await listFiles(outputDirectory))
           .filter(
-            (file) => file !== 'sw.js' && !isDeferredOnnxRuntimeAsset(file),
+            (file) =>
+              file !== 'sw.js' &&
+              !isDeferredOnnxRuntimeAsset(file) &&
+              !isDeferredJapaneseFontAsset(file),
           )
           .sort()
           .map((file) => `./${file}`)

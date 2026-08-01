@@ -89,6 +89,21 @@ const renderPanel = (overrides: Partial<AutomationBatchPanelProps> = {}) => {
 }
 
 describe('AutomationBatchPanel', () => {
+  it('renders its namespaced English catalog when locale is en', () => {
+    renderPanel({ locale: 'en' })
+
+    expect(
+      screen.getByRole('heading', { name: 'Automation and batch export' }),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('tablist', { name: 'Automation tool categories' }),
+    ).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Macros' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Automation and batch export are ready.',
+    )
+  })
+
   it('records, selects, parameterizes, and replays saved macros', async () => {
     const { callbacks, rerenderPanel } = renderPanel()
     const user = userEvent.setup()

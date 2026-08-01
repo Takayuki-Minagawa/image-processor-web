@@ -21,6 +21,34 @@ const sourceImage = (): ImageData => {
 }
 
 describe('AdvancedStudioPanel filter preview', () => {
+  it('renders the advanced child tools in English when locale is en', () => {
+    render(
+      <AdvancedStudioPanel
+        locale="en"
+        documentWidth={2}
+        documentHeight={1}
+        getDocumentImageData={vi.fn(async () => sourceImage())}
+        onSelectionMask={vi.fn()}
+        onBackgroundResult={vi.fn()}
+        onScriptCommands={vi.fn()}
+        onApplyFilters={vi.fn()}
+        onAddAdvancedAdjustment={vi.fn()}
+        onUpdateAdvancedAdjustment={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole('heading', { name: 'Advanced filters' }),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('heading', { name: 'Advanced tools' }),
+    ).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Selection' })).toBeVisible()
+    expect(
+      screen.getByRole('img', { name: 'Lasso drawing area' }),
+    ).toBeVisible()
+  })
+
   it('uses the current document image and the CPU fallback for a real filtered preview', async () => {
     const getDocumentImageData = vi.fn(async () => sourceImage())
     render(
