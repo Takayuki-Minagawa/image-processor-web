@@ -2,7 +2,7 @@
 
 更新日: 2026-09-30
 
-Pixelweaveは、local-first画像編集MVPと`FEATURE_EXPANSION_WORK_PLAN.md`のP1〜P7を維持したまま、`CANVA_PARITY_WORK_PLAN.md`のC0〜C9に対応するデザイン制作基盤を追加した。
+Pixelweaveは、local-first画像編集MVPと機能拡張P1〜P7を維持したまま、C0〜C9に対応するデザイン制作基盤を追加した。実装状況と残課題は本書、設計判断はADR、調査・検証記録は各PRに集約している。
 
 本書では、「純粋ロジック・schema・adapterが実装済み」であることと、「製品UIから受け入れ条件まで接続済み」であることを区別する。ここでのCanva parityは、端末内で複数ページのデザインを素材・テンプレートから組み立て、静止画・PDF・GIF・browser対応時の動画へ出力する制作機能を指す。クラウド同期、共有リンク、共同編集、生成AIは引き続き対象外である。
 

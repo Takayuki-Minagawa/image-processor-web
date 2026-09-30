@@ -130,9 +130,6 @@ PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証しま�
 
 ## 設計資料
 
-- [初期調査・作業計画](./IMAGE_EDITOR_WORK_PLAN.md)
-- [機能拡張作業計画](./FEATURE_EXPANSION_WORK_PLAN.md)
-- [Canva parity作業計画](./CANVA_PARITY_WORK_PLAN.md)
 - [実装状況](./docs/IMPLEMENTATION_STATUS.md)
 - [Architecture Decision Records](./docs/adr/)
 
