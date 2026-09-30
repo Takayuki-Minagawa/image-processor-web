@@ -101,7 +101,11 @@ export function downloadText(
   fileName: string,
   type = 'application/json',
 ): void {
-  const url = URL.createObjectURL(new Blob([source], { type }))
+  downloadBlob(new Blob([source], { type }), fileName)
+}
+
+export function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob)
   try {
     downloadUrl(url, fileName)
   } finally {

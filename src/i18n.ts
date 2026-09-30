@@ -55,6 +55,18 @@ export interface EditorUiCopy {
   selectedObject: string
   scale: string
   download: string
+  copyPng: string
+  clipboardCopied: string
+  clipboardUnavailable: string
+  clipboardDenied: string
+  clipboardFailed: string
+  exportFailed: string
+  exportSucceeded: string
+  exportUnsupported: string
+  exportTooLarge: string
+  svgEmbeddedHint: string
+  originalScale: string
+  selectionViewBox: string
   formatNotes: Record<'png' | 'jpeg' | 'webp' | 'svg', string>
   studioTitle: string
   studioDescription: string
@@ -135,6 +147,10 @@ export const JAPANESE_EDITOR_UI_COPY: EditorUiCopy = {
     ['元に戻す', '⌘ / Ctrl + Z'],
     ['やり直す', '⇧⌘ + Z / Ctrl + Y'],
     ['コピー / 切取 / 貼付', '⌘ / Ctrl + C / X / V'],
+    ['すべてのレイヤーを選択', '⌘ / Ctrl + A'],
+    ['レイヤーを複製', '⌘ / Ctrl + D'],
+    ['選択レイヤーを1px移動', '↑ / ↓ / ← / →'],
+    ['選択レイヤーを10px移動', 'Shift + ↑ / ↓ / ← / →'],
     ['保存', '⌘ / Ctrl + S'],
     ['開く', '⌘ / Ctrl + O'],
     ['拡大 / 縮小 / 100%', '+ / − / 0'],
@@ -172,6 +188,22 @@ export const JAPANESE_EDITOR_UI_COPY: EditorUiCopy = {
   selectedObject: '選択オブジェクト',
   scale: '出力倍率',
   download: 'ダウンロード',
+  copyPng: 'PNGをコピー',
+  clipboardCopied: 'PNGをコピーしました。他のアプリに貼り付けできます。',
+  clipboardUnavailable:
+    'このブラウザーでは画像をコピーできません。ダウンロードを利用してください。',
+  clipboardDenied:
+    '画像のコピーが許可されませんでした。ブラウザーの権限を確認するか、ダウンロードを利用してください。',
+  clipboardFailed:
+    '画像をコピーできませんでした。再試行するか、ダウンロードを利用してください。',
+  exportFailed: '画像を書き出せませんでした。',
+  exportSucceeded: '画像を書き出しました。',
+  exportUnsupported:
+    'このブラウザーは選択した画像形式に対応していません。PNGで再試行してください。',
+  exportTooLarge: '出力寸法は各辺1〜8,192 px、合計64 MP以下にしてください。',
+  svgEmbeddedHint: '画像レイヤーはData URLとしてSVG内へ埋め込まれます。',
+  originalScale: '1×（原寸）',
+  selectionViewBox: '選択範囲のviewBox',
   formatNotes: {
     png: '透明度・高品質',
     jpeg: '写真・小容量',

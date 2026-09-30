@@ -84,16 +84,19 @@ const deferred = <T>(): {
 describe('FabricEditorEngine export multiplier safety', () => {
   it('uses an exact multiplier above the interactive cap after validating output dimensions', async () => {
     const engine = createEngine()
-    const toDataUrl = vi
-      .spyOn(engine.getCanvas(), 'toDataURL')
-      .mockReturnValue('data:image/png;base64,AA==')
+    const output = document.createElement('canvas')
+    vi.spyOn(output, 'toDataURL').mockReturnValue('data:image/png;base64,AA==')
+    const toCanvasElement = vi
+      .spyOn(engine.getCanvas(), 'toCanvasElement')
+      .mockReturnValue(output)
 
     await engine.exportDataUrl('png', 1, 16, {
       exactSafeMultiplier: true,
     })
 
-    expect(toDataUrl).toHaveBeenCalledWith(
-      expect.objectContaining({ multiplier: 16 }),
+    expect(toCanvasElement).toHaveBeenCalledWith(
+      16,
+      expect.objectContaining({ width: 200, height: 150 }),
     )
   })
 
