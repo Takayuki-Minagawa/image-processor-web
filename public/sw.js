@@ -85,11 +85,14 @@ self.addEventListener('fetch', (event) => {
         try {
           return await fetch(request)
         } catch {
-          const cache = await caches.open(CACHE_NAME)
-          return (
-            (await cache.match(scopedUrl('./index.html'))) ??
-            offlineNavigationResponse()
-          )
+          try {
+            const cache = await caches.open(CACHE_NAME)
+            const cached = await cache.match(scopedUrl('./index.html'))
+            if (cached) return cached
+          } catch {
+            // Storage may be unavailable even when this worker is installed.
+          }
+          return offlineNavigationResponse()
         }
       })(),
     )
@@ -97,19 +100,30 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.open(CACHE_NAME).then(async (cache) => {
-      const cached = await cache.match(request)
-      if (cached) return cached
+    (async () => {
+      let cache
+      try {
+        cache = await caches.open(CACHE_NAME)
+        const cached = await cache.match(request)
+        if (cached) return cached
+      } catch {
+        // A cache read failure must not prevent an online request.
+      }
 
       const response = await fetch(request)
       if (
+        cache &&
         response.ok &&
         response.type === 'basic' &&
         isWithinScope(new URL(response.url))
       ) {
-        await cache.put(request, response.clone())
+        try {
+          await cache.put(request, response.clone())
+        } catch {
+          // Quota and storage failures must not discard a network response.
+        }
       }
       return response
-    }),
+    })(),
   )
 })

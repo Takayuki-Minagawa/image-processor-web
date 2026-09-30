@@ -53,8 +53,21 @@ import {
   type SelectionTransform,
 } from './editor/fabricEngine'
 import { AsyncOperationGate } from './editor/asyncOperationGate'
+import ExportImageForm, {
+  type ExportImageAction,
+  type ExportImageSettings,
+} from './components/ExportImageForm'
+import {
+  ClipboardImageError,
+  copyPngToClipboard,
+} from './export/clipboardImage'
+import { RasterExportError } from './export/rasterImage'
 import type { AutosaveRepository } from './editor/autosave'
 import { CompactHistory } from './editor/compactHistory'
+import {
+  resolveEditorShortcut,
+  shouldIgnoreEditorInput,
+} from './editor/shortcuts'
 import type {
   AutomationFilter,
   AutomationCommand,
@@ -91,7 +104,6 @@ import {
 import {
   assertSafeImageDimensions,
   MAX_IMAGE_DIMENSION,
-  MAX_IMAGE_PIXELS,
 } from './lib/imageSafety'
 import type {
   BatchTransformRequest,
@@ -383,15 +395,6 @@ async function downloadArrayBuffer(
   } finally {
     globalThis.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
-  )
 }
 
 const ERROR_CODE_MESSAGES: Record<string, string> = {
@@ -836,12 +839,7 @@ export default function EditorApplication() {
     unit: 'px' as DesignUnit,
     dpi: 300,
   })
-  const [exportSettings, setExportSettings] = useState<{
-    format: ExportImageFormat | 'svg'
-    quality: number
-    multiplier: number
-    svgScope: 'document' | 'selection'
-  }>({
+  const [exportSettings, setExportSettings] = useState<ExportImageSettings>({
     format: 'png',
     quality: 0.92,
     multiplier: 1,
@@ -3271,60 +3269,65 @@ export default function EditorApplication() {
     })
   }
 
-  const exportImage = async (event: FormEvent) => {
-    event.preventDefault()
+  const exportImage = async (action: ExportImageAction): Promise<void> => {
     const engine = engineRef.current
-    if (!engine) return
+    if (!engine || busyRef.current) throw new Error(ui.exportFailed)
+    if (
+      action === 'download' &&
+      exportSettings.format === 'svg' &&
+      exportSettings.svgScope === 'selection' &&
+      engine.getSelectedLayerIds().length === 0
+    ) {
+      throw new Error(ui.exportSelectionRequired)
+    }
     beginBusy()
     try {
-      await waitForEditorOperations()
-      if (exportSettings.format === 'svg') {
-        const source = await engine.exportSvg(exportSettings.svgScope)
-        const { downloadText } = await import('./lib/files')
-        downloadText(
-          source,
-          `${sanitizeFileStem(projectNameRef.current)}.svg`,
-          'image/svg+xml',
-        )
-        setActiveDialog(null)
-        setStatus({
-          kind: 'success',
-          message:
-            'SVGを書き出しました。ラスターレイヤーは埋め込み画像として含まれます。',
+      if (action === 'clipboard') {
+        await copyPngToClipboard(async () => {
+          await waitForEditorOperations()
+          return engine.exportBlob('png', 1, exportSettings.multiplier)
         })
+        setStatus({ kind: 'success', message: ui.clipboardCopied })
         return
       }
-      const outputWidth = Math.round(
-        documentSize.width * exportSettings.multiplier,
-      )
-      const outputHeight = Math.round(
-        documentSize.height * exportSettings.multiplier,
-      )
-      if (
-        outputWidth > MAX_IMAGE_DIMENSION ||
-        outputHeight > MAX_IMAGE_DIMENSION ||
-        outputWidth * outputHeight > MAX_IMAGE_PIXELS
-      ) {
-        throw new FileValidationError(
-          '出力寸法が上限（各辺8,192 px、合計64 MP）を超えています。',
+      await waitForEditorOperations()
+      const { downloadBlob, downloadText } = await import('./lib/files')
+      const stem = sanitizeFileStem(projectNameRef.current)
+      if (exportSettings.format === 'svg') {
+        const source = await engine.exportSvg(exportSettings.svgScope)
+        downloadText(source, `${stem}.svg`, 'image/svg+xml')
+      } else {
+        const blob = await engine.exportBlob(
+          exportSettings.format,
+          exportSettings.quality,
+          exportSettings.multiplier,
+        )
+        downloadBlob(
+          blob,
+          `${stem}.${exportSettings.format === 'jpeg' ? 'jpg' : exportSettings.format}`,
         )
       }
-      const url = await engine.exportDataUrl(
-        exportSettings.format,
-        exportSettings.quality,
-        exportSettings.multiplier,
-      )
-      const { downloadUrl } = await import('./lib/files')
-      downloadUrl(
-        url,
-        `${sanitizeFileStem(projectNameRef.current)}.${exportSettings.format === 'jpeg' ? 'jpg' : exportSettings.format}`,
-      )
+      setStatus({ kind: 'success', message: ui.exportSucceeded })
       setActiveDialog(null)
     } catch (error) {
-      setStatus({
-        kind: 'error',
-        message: userFacingErrorMessage(error, '画像を書き出せませんでした。'),
-      })
+      const message =
+        error instanceof ClipboardImageError
+          ? ui.clipboardUnavailable
+          : error instanceof DOMException &&
+              (error.name === 'NotAllowedError' ||
+                error.name === 'SecurityError') &&
+              action === 'clipboard'
+            ? ui.clipboardDenied
+            : error instanceof RasterExportError &&
+                error.code === 'unsupported-format'
+              ? ui.exportUnsupported
+              : error instanceof RangeError
+                ? ui.exportTooLarge
+                : action === 'clipboard'
+                  ? ui.clipboardFailed
+                  : ui.exportFailed
+      setStatus({ kind: 'error', message })
+      throw new Error(message, { cause: error })
     } finally {
       endBusy()
     }
@@ -4208,11 +4211,14 @@ export default function EditorApplication() {
 
   useEffect(() => {
     const onPasteImage = (event: ClipboardEvent) => {
-      if (busyRef.current) {
-        event.preventDefault()
+      if (
+        shouldIgnoreEditorInput(event, {
+          busy: busyRef.current,
+          modalOpen: Boolean(activeDialog) || presentationOpen,
+        })
+      ) {
         return
       }
-      if (isEditableTarget(event.target)) return
       const image = [...(event.clipboardData?.files ?? [])].find((file) =>
         file.type.startsWith('image/'),
       )
@@ -4234,67 +4240,85 @@ export default function EditorApplication() {
     }
     window.addEventListener('paste', onPasteImage)
     return () => window.removeEventListener('paste', onPasteImage)
-  }, [importImage, importSvg, runEditorOperation])
+  }, [
+    activeDialog,
+    importImage,
+    importSvg,
+    presentationOpen,
+    runEditorOperation,
+  ])
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (activeDialog && event.key === 'Escape') {
+      if (
+        activeDialog &&
+        !presentationOpen &&
+        !event.defaultPrevented &&
+        !event.isComposing &&
+        event.keyCode !== 229 &&
+        event.key === 'Escape'
+      ) {
         event.preventDefault()
         setActiveDialog(null)
         return
       }
-      if (busyRef.current) return
-      if (isEditableTarget(event.target) || activeDialog) return
-
-      const modifier = (event.metaKey || event.ctrlKey) && !event.altKey
-      const key = event.key.toLowerCase()
-      if (modifier && key === 'z') {
-        event.preventDefault()
-        void (event.shiftKey ? redo() : undo())
-      } else if (modifier && key === 'y') {
-        event.preventDefault()
-        void redo()
-      } else if (modifier && key === 's') {
-        event.preventDefault()
-        void saveProject()
-      } else if (modifier && key === 'o') {
-        event.preventDefault()
-        projectInputRef.current?.click()
-      } else if (modifier && key === 'c') {
-        event.preventDefault()
-        runEditorOperation((engine) => engine.copySelection())
-      } else if (modifier && key === 'x') {
-        event.preventDefault()
-        runEditorOperation((engine) => engine.cutSelection())
-      } else if (modifier && key === 'g') {
-        event.preventDefault()
-        runEditorOperation(async (engine) =>
-          event.shiftKey ? engine.ungroupSelection() : engine.groupSelection(),
-        )
-      } else if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      } else if (key === 'delete' || key === 'backspace') {
-        event.preventDefault()
-        deleteActiveSelection()
-      } else if (!event.shiftKey && key === 'v') {
-        activateTool('select')
-      } else if (!event.shiftKey && key === 'b') {
-        activateTool('brush')
-      } else if (!event.shiftKey && key === 'e') {
-        activateTool('eraser')
-      } else if (!event.shiftKey && key === 'h') {
-        activateTool('pan')
-      } else if (key === '+' || key === '=') {
-        engineRef.current?.zoomIn()
-      } else if (key === '-') {
-        engineRef.current?.zoomOut()
-      } else if (key === '0') {
-        engineRef.current?.zoom100()
-      } else if (
-        key === '?' ||
-        (event.shiftKey && (event.code === 'Slash' || key === '/'))
-      ) {
-        setActiveDialog('shortcuts')
+      const shortcut = resolveEditorShortcut(event, {
+        busy: busyRef.current,
+        modalOpen: Boolean(activeDialog) || presentationOpen,
+      })
+      if (!shortcut) return
+      event.preventDefault()
+      switch (shortcut.action) {
+        case 'undo':
+          void undo()
+          break
+        case 'redo':
+          void redo()
+          break
+        case 'save':
+          void saveProject()
+          break
+        case 'open':
+          projectInputRef.current?.click()
+          break
+        case 'copy':
+          runEditorOperation((engine) => engine.copySelection())
+          break
+        case 'cut':
+          runEditorOperation((engine) => engine.cutSelection())
+          break
+        case 'group':
+          runEditorOperation(async (engine) => engine.groupSelection())
+          break
+        case 'ungroup':
+          runEditorOperation(async (engine) => engine.ungroupSelection())
+          break
+        case 'duplicate':
+          runEditorOperation((engine) => engine.duplicateSelection())
+          break
+        case 'select-all':
+          engineRef.current?.selectAllLayers()
+          break
+        case 'nudge':
+          engineRef.current?.nudgeSelection(shortcut.dx, shortcut.dy)
+          break
+        case 'delete':
+          deleteActiveSelection()
+          break
+        case 'tool':
+          activateTool(shortcut.tool)
+          break
+        case 'zoom-in':
+          engineRef.current?.zoomIn()
+          break
+        case 'zoom-out':
+          engineRef.current?.zoomOut()
+          break
+        case 'zoom-100':
+          engineRef.current?.zoom100()
+          break
+        case 'help':
+          setActiveDialog('shortcuts')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -4303,6 +4327,7 @@ export default function EditorApplication() {
     activateTool,
     activeDialog,
     deleteActiveSelection,
+    presentationOpen,
     redo,
     runEditorOperation,
     saveProject,
@@ -6007,136 +6032,16 @@ export default function EditorApplication() {
           closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
-          <form className="modal-form" onSubmit={exportImage}>
-            <fieldset className="format-options">
-              <legend>{ui.fileFormat}</legend>
-              {(['png', 'jpeg', 'webp', 'svg'] as const).map((format) => (
-                <label
-                  key={format}
-                  className={exportSettings.format === format ? 'selected' : ''}
-                >
-                  <input
-                    type="radio"
-                    name="format"
-                    value={format}
-                    checked={exportSettings.format === format}
-                    onChange={() =>
-                      setExportSettings((value) => ({ ...value, format }))
-                    }
-                  />
-                  <span>
-                    {format === 'jpeg' ? 'JPG' : format.toUpperCase()}
-                  </span>
-                  <small>{ui.formatNotes[format]}</small>
-                </label>
-              ))}
-            </fieldset>
-            <label className="adjustment-control">
-              <span>
-                {ui.quality}
-                <output>{Math.round(exportSettings.quality * 100)}%</output>
-              </span>
-              <input
-                type="range"
-                aria-label={ui.quality}
-                min="0.1"
-                max="1"
-                step="0.01"
-                disabled={
-                  exportSettings.format === 'png' ||
-                  exportSettings.format === 'svg'
-                }
-                value={exportSettings.quality}
-                onChange={(event) =>
-                  setExportSettings((value) => ({
-                    ...value,
-                    quality: Number(event.target.value),
-                  }))
-                }
-              />
-            </label>
-            {exportSettings.format === 'svg' ? (
-              <>
-                <label>
-                  <span>{ui.svgScope}</span>
-                  <select
-                    value={exportSettings.svgScope}
-                    onChange={(event) =>
-                      setExportSettings((value) => ({
-                        ...value,
-                        svgScope: event.target.value as
-                          'document' | 'selection',
-                      }))
-                    }
-                  >
-                    <option value="document">{ui.wholeCanvas}</option>
-                    <option value="selection">{ui.selectedObject}</option>
-                  </select>
-                </label>
-                <p className="panel-intro">
-                  画像レイヤーはData URLとしてSVG内へ埋め込まれます。
-                </p>
-              </>
-            ) : null}
-            <label>
-              <span>{ui.scale}</span>
-              <select
-                disabled={exportSettings.format === 'svg'}
-                value={exportSettings.multiplier}
-                onChange={(event) =>
-                  setExportSettings((value) => ({
-                    ...value,
-                    multiplier: Number(event.target.value),
-                  }))
-                }
-              >
-                <option value="0.5">0.5×</option>
-                <option value="1">1×（原寸）</option>
-                <option
-                  value="2"
-                  disabled={
-                    documentSize.width * 2 > MAX_IMAGE_DIMENSION ||
-                    documentSize.height * 2 > MAX_IMAGE_DIMENSION ||
-                    documentSize.width * 2 * (documentSize.height * 2) >
-                      MAX_IMAGE_PIXELS
-                  }
-                >
-                  2×
-                </option>
-              </select>
-            </label>
-            <div className="export-summary">
-              <Glyph>▧</Glyph>
-              <span>
-                <strong>
-                  {exportSettings.format === 'svg'
-                    ? exportSettings.svgScope === 'document'
-                      ? `${documentSize.width} × ${documentSize.height} viewBox`
-                      : '選択範囲のviewBox'
-                    : `${Math.round(documentSize.width * exportSettings.multiplier)} × ${Math.round(documentSize.height * exportSettings.multiplier)} px`}
-                </strong>
-                <small>
-                  {sanitizeFileStem(projectName)}.
-                  {exportSettings.format === 'jpeg'
-                    ? 'jpg'
-                    : exportSettings.format}
-                </small>
-              </span>
-            </div>
-            <div className="modal-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setActiveDialog(null)}
-              >
-                {ui.cancel}
-              </button>
-              <button className="primary-button" type="submit">
-                <Download aria-hidden="true" />
-                {ui.download}
-              </button>
-            </div>
-          </form>
+          <ExportImageForm
+            settings={exportSettings}
+            onChange={setExportSettings}
+            documentSize={documentSize}
+            projectName={projectName}
+            ui={ui}
+            busy={busy}
+            onExport={exportImage}
+            onClose={() => setActiveDialog(null)}
+          />
         </Modal>
       ) : null}
 

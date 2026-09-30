@@ -35,6 +35,10 @@ export const ENGLISH_EDITOR_UI_COPY: EditorUiCopy = {
     ['Undo', '⌘ / Ctrl + Z'],
     ['Redo', '⇧⌘ + Z / Ctrl + Y'],
     ['Copy / cut / paste', '⌘ / Ctrl + C / X / V'],
+    ['Select all layers', '⌘ / Ctrl + A'],
+    ['Duplicate layers', '⌘ / Ctrl + D'],
+    ['Move selection by 1 px', '↑ / ↓ / ← / →'],
+    ['Move selection by 10 px', 'Shift + ↑ / ↓ / ← / →'],
     ['Save', '⌘ / Ctrl + S'],
     ['Open', '⌘ / Ctrl + O'],
     ['Zoom in / out / 100%', '+ / − / 0'],
@@ -71,6 +75,22 @@ export const ENGLISH_EDITOR_UI_COPY: EditorUiCopy = {
   selectedObject: 'Selected object',
   scale: 'Output scale',
   download: 'Download',
+  copyPng: 'Copy PNG',
+  clipboardCopied: 'PNG copied. You can paste it into another app.',
+  clipboardUnavailable:
+    'Image copying is unavailable in this browser. Use Download instead.',
+  clipboardDenied:
+    'Image copying was not allowed. Check your browser permissions or use Download.',
+  clipboardFailed: 'Could not copy the image. Try again or use Download.',
+  exportFailed: 'Could not export the image.',
+  exportSelectionRequired: 'Select an object to export as SVG.',
+  exportSucceeded: 'Image exported.',
+  exportUnsupported:
+    'This browser does not support the selected image format. Try PNG.',
+  exportTooLarge: 'Output must be 1–8,192 px per side and at most 64 MP.',
+  svgEmbeddedHint: 'Raster layers are embedded in the SVG as Data URLs.',
+  originalScale: '1× (original)',
+  selectionViewBox: 'Selection viewBox',
   formatNotes: {
     png: 'Transparency and high quality',
     jpeg: 'Photos and smaller files',

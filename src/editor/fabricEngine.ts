@@ -27,6 +27,13 @@ import {
   assertSafeImageDimensions,
 } from '../lib/imageSafety'
 import {
+  encodeRasterBlob,
+  encodeRasterDataUrl,
+  releaseRasterCanvas,
+  resolveRasterExportMultiplier,
+  type RasterImageFormat,
+} from '../export/rasterImage'
+import {
   assertRestorableEditorSnapshot,
   imageDimensionsMatchHeader,
   inspectEmbeddedImageDataUrl,
@@ -96,7 +103,7 @@ export type EditorChangeReason =
   | 'chart'
   | 'table'
 
-export type ExportImageFormat = 'png' | 'jpeg' | 'webp'
+export type ExportImageFormat = RasterImageFormat
 
 export interface ExportDataUrlOptions {
   exactSafeMultiplier?: boolean
@@ -2682,6 +2689,72 @@ export class FabricEditorEngine {
       .map((object) => this.requireEditorId(this.normalizeEditorObject(object)))
   }
 
+  /** Selects editable top-level layers; owned grid images follow their cells. */
+  public selectAllLayers(): string[] {
+    this.assertUsable()
+    const objects = this.canvas.getObjects().filter((object) => {
+      const layer = object as EditorObject
+      return (
+        layer.visible &&
+        !layer.editorLocked &&
+        layer.editorKind !== 'grid-cell-image'
+      )
+    })
+    this.withSuppressedEvents(() => {
+      this.canvas.discardActiveObject()
+      this.activateObjects(objects)
+    })
+    this.canvas.requestRenderAll()
+    this.emitSelection()
+    this.emitLayers()
+    return objects.map((object) => this.requireEditorId(object as EditorObject))
+  }
+
+  /** Moves a selection in document pixels, independently of canvas zoom. */
+  public nudgeSelection(dx: number, dy: number): boolean {
+    this.assertUsable()
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) {
+      return false
+    }
+    const selected = this.canvas.getActiveObjects()
+    const movable = selected.filter((object) => {
+      const layer = object as EditorObject
+      if (
+        layer.editorKind === 'adjustment' ||
+        layer.editorKind === 'grid-cell-image'
+      ) {
+        return false
+      }
+      let ancestor: FabricObject | undefined = object
+      while (ancestor) {
+        if (!ancestor.visible || (ancestor as EditorObject).editorLocked) {
+          return false
+        }
+        // ActiveSelection temporarily replaces group; parent still points to
+        // the persistent group whose lock and visibility must be respected.
+        ancestor = ancestor.parent ?? ancestor.group
+      }
+      return true
+    })
+    if (movable.length === 0) return false
+    this.mutate('object-modified', () => {
+      // Rebuild the active selection so its control bounds follow the objects.
+      this.canvas.discardActiveObject()
+      const groups = new Set<Group>()
+      movable.forEach((object) => {
+        object.setXY(object.getXY().add(new Point(dx, dy)))
+        object.setCoords()
+        if (object.group) groups.add(object.group)
+      })
+      groups.forEach((group) => {
+        group.triggerLayout()
+        group.setCoords()
+      })
+      this.activateObjects(selected)
+    })
+    return true
+  }
+
   public selectLayer(id: string, additive = false): boolean {
     this.assertUsable()
     const target = this.findLayer(id)
@@ -3986,69 +4059,43 @@ export class FabricEditorEngine {
     options: ExportDataUrlOptions = {},
   ): Promise<string> {
     await this.waitForAdjustmentLayers()
-    const resolvedMultiplier = options.exactSafeMultiplier
-      ? multiplier
-      : clamp(finiteOr(multiplier, 1), 0.1, 8)
-    if (
-      options.exactSafeMultiplier &&
-      (!Number.isFinite(resolvedMultiplier) || resolvedMultiplier <= 0)
-    ) {
-      throw new RangeError('Export multiplier must be positive and finite.')
-    }
-    if (options.exactSafeMultiplier) {
-      assertSafeImageDimensions({
-        width: Math.max(1, Math.ceil(this.documentWidth * resolvedMultiplier)),
-        height: Math.max(
-          1,
-          Math.ceil(this.documentHeight * resolvedMultiplier),
-        ),
-      })
-    }
-    const previousTransform = [
-      ...this.canvas.viewportTransform,
-    ] as typeof this.canvas.viewportTransform
-    const previousViewportWidth = this.canvas.getWidth()
-    const previousViewportHeight = this.canvas.getHeight()
-    let dataUrl: string
+    const resolvedMultiplier = resolveRasterExportMultiplier(
+      this.documentWidth,
+      this.documentHeight,
+      multiplier,
+      options.exactSafeMultiplier,
+    )
+    const output = this.createDocumentCanvas(resolvedMultiplier)
     try {
-      this.isExporting = true
-      this.withSuppressedEvents(() => {
-        this.canvas.setDimensions(
-          {
-            width: this.documentWidth,
-            height: this.documentHeight,
-          },
-          { backstoreOnly: true },
-        )
-        this.canvas.setViewportTransform([...iMatrix])
-        this.canvas.requestRenderAll()
-      })
-      dataUrl = this.canvas.toDataURL({
-        format,
-        quality: clamp(finiteOr(quality, 0.92), 0, 1),
-        multiplier: resolvedMultiplier,
-        left: 0,
-        top: 0,
-        width: this.documentWidth,
-        height: this.documentHeight,
-        enableRetinaScaling: false,
-      })
+      const dataUrl = encodeRasterDataUrl(output, format, quality)
       this.emitStatus('画像を書き出しました。', 'success')
+      return dataUrl
     } finally {
-      this.isExporting = false
-      this.withSuppressedEvents(() => {
-        this.canvas.setDimensions(
-          {
-            width: previousViewportWidth,
-            height: previousViewportHeight,
-          },
-          { backstoreOnly: true },
-        )
-        this.canvas.setViewportTransform(previousTransform)
-        this.canvas.requestRenderAll()
-      })
+      releaseRasterCanvas(output)
     }
-    return dataUrl
+  }
+
+  public async exportBlob(
+    format: ExportImageFormat = 'png',
+    quality = 0.92,
+    multiplier = 1,
+    options: ExportDataUrlOptions = {},
+  ): Promise<Blob> {
+    await this.waitForAdjustmentLayers()
+    const resolvedMultiplier = resolveRasterExportMultiplier(
+      this.documentWidth,
+      this.documentHeight,
+      multiplier,
+      options.exactSafeMultiplier,
+    )
+    const output = this.createDocumentCanvas(resolvedMultiplier)
+    try {
+      const blob = await encodeRasterBlob(output, format, quality)
+      this.emitStatus('画像を書き出しました。', 'success')
+      return blob
+    } finally {
+      releaseRasterCanvas(output)
+    }
   }
 
   public async exportSizedPng(
@@ -4063,53 +4110,62 @@ export class FabricEditorEngine {
     assertSafeImageDimensions({ width: outputWidth, height: outputHeight })
     const source = this.createDocumentCanvas()
     const output = document.createElement('canvas')
-    output.width = outputWidth
-    output.height = outputHeight
-    const context = output.getContext('2d')
-    if (!context) {
-      throw new Error('画像書き出し用Canvasを作成できませんでした。')
+    try {
+      output.width = outputWidth
+      output.height = outputHeight
+      const context = output.getContext('2d')
+      if (!context) {
+        throw new Error('画像書き出し用Canvasを作成できませんでした。')
+      }
+      context.clearRect(0, 0, outputWidth, outputHeight)
+      if (background !== 'transparent') {
+        context.fillStyle = background
+        context.fillRect(0, 0, outputWidth, outputHeight)
+      }
+      context.imageSmoothingEnabled = true
+      context.imageSmoothingQuality = 'high'
+      if (fit === 'stretch') {
+        context.drawImage(source, 0, 0, outputWidth, outputHeight)
+      } else {
+        const scale =
+          fit === 'cover'
+            ? Math.max(
+                outputWidth / this.documentWidth,
+                outputHeight / this.documentHeight,
+              )
+            : Math.min(
+                outputWidth / this.documentWidth,
+                outputHeight / this.documentHeight,
+              )
+        const drawWidth = this.documentWidth * scale
+        const drawHeight = this.documentHeight * scale
+        context.drawImage(
+          source,
+          (outputWidth - drawWidth) / 2,
+          (outputHeight - drawHeight) / 2,
+          drawWidth,
+          drawHeight,
+        )
+      }
+      return encodeRasterDataUrl(output, 'png', 1)
+    } finally {
+      releaseRasterCanvas(source)
+      releaseRasterCanvas(output)
     }
-    context.clearRect(0, 0, outputWidth, outputHeight)
-    if (background !== 'transparent') {
-      context.fillStyle = background
-      context.fillRect(0, 0, outputWidth, outputHeight)
-    }
-    context.imageSmoothingEnabled = true
-    context.imageSmoothingQuality = 'high'
-    if (fit === 'stretch') {
-      context.drawImage(source, 0, 0, outputWidth, outputHeight)
-      return output.toDataURL('image/png')
-    }
-    const scale =
-      fit === 'cover'
-        ? Math.max(
-            outputWidth / this.documentWidth,
-            outputHeight / this.documentHeight,
-          )
-        : Math.min(
-            outputWidth / this.documentWidth,
-            outputHeight / this.documentHeight,
-          )
-    const drawWidth = this.documentWidth * scale
-    const drawHeight = this.documentHeight * scale
-    context.drawImage(
-      source,
-      (outputWidth - drawWidth) / 2,
-      (outputHeight - drawHeight) / 2,
-      drawWidth,
-      drawHeight,
-    )
-    return output.toDataURL('image/png')
   }
 
   public async getDocumentImageData(): Promise<ImageData> {
     await this.waitForAdjustmentLayers()
     const source = this.createDocumentCanvas()
-    const context = source.getContext('2d', { willReadFrequently: true })
-    if (!context) {
-      throw new Error('画像処理用Canvasを作成できませんでした。')
+    try {
+      const context = source.getContext('2d', { willReadFrequently: true })
+      if (!context) {
+        throw new Error('画像処理用Canvasを作成できませんでした。')
+      }
+      return context.getImageData(0, 0, this.documentWidth, this.documentHeight)
+    } finally {
+      releaseRasterCanvas(source)
     }
-    return context.getImageData(0, 0, this.documentWidth, this.documentHeight)
   }
 
   /**
@@ -4529,12 +4585,25 @@ export class FabricEditorEngine {
     }
   }
 
-  private createDocumentCanvas(): HTMLCanvasElement {
+  private createDocumentCanvas(multiplier = 1): HTMLCanvasElement {
+    this.assertUsable()
+    resolveRasterExportMultiplier(
+      this.documentWidth,
+      this.documentHeight,
+      multiplier,
+      true,
+    )
     const previousTransform = [
       ...this.canvas.viewportTransform,
     ] as typeof this.canvas.viewportTransform
     const previousViewportWidth = this.canvas.getWidth()
     const previousViewportHeight = this.canvas.getHeight()
+    const previousRetinaScaling = this.canvas.enableRetinaScaling
+    const drawingState = this.canvas as unknown as {
+      skipControlsDrawing: boolean
+    }
+    const previousSkipControlsDrawing = drawingState.skipControlsDrawing
+    const previousExporting = this.isExporting
     try {
       this.isExporting = true
       this.withSuppressedEvents(() => {
@@ -4545,14 +4614,18 @@ export class FabricEditorEngine {
         this.canvas.setViewportTransform([...iMatrix])
         this.canvas.requestRenderAll()
       })
-      return this.canvas.toCanvasElement(1, {
+      return this.canvas.toCanvasElement(multiplier, {
         left: 0,
         top: 0,
         width: this.documentWidth,
         height: this.documentHeight,
       })
     } finally {
-      this.isExporting = false
+      this.isExporting = previousExporting
+      // Fabric's toCanvasElement does not restore these flags if rendering
+      // throws. Restore them before setDimensions consults retina scaling.
+      this.canvas.enableRetinaScaling = previousRetinaScaling
+      drawingState.skipControlsDrawing = previousSkipControlsDrawing
       this.withSuppressedEvents(() => {
         this.canvas.setDimensions(
           {
