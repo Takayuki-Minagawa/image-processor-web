@@ -132,4 +132,10 @@ test('English export controls fit a phone viewport and retain accessible names',
     ),
   ).toEqual([])
   await dialog.screenshot({ path: 'test-results/export-phone.png' })
+  await dialog.getByRole('radio', { name: /^SVG/ }).check()
+  await dialog.getByLabel('SVG area').selectOption('selection')
+  await dialog.getByRole('button', { name: 'Download' }).click()
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Select an object to export as SVG.',
+  )
 })

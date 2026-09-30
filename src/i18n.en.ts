@@ -83,6 +83,7 @@ export const ENGLISH_EDITOR_UI_COPY: EditorUiCopy = {
     'Image copying was not allowed. Check your browser permissions or use Download.',
   clipboardFailed: 'Could not copy the image. Try again or use Download.',
   exportFailed: 'Could not export the image.',
+  exportSelectionRequired: 'Select an object to export as SVG.',
   exportSucceeded: 'Image exported.',
   exportUnsupported:
     'This browser does not support the selected image format. Try PNG.',

@@ -134,6 +134,45 @@ describe('keyboard selection operations', () => {
     expect(onChanged).not.toHaveBeenCalled()
   })
 
+  it.each(['locked', 'hidden'] as const)(
+    'preserves children of a %s parent in a mixed active selection',
+    (restriction) => {
+      const { engine, onChanged } = createEngine()
+      const childId = engine.addRect({
+        left: 10,
+        top: 10,
+        width: 20,
+        height: 20,
+      })
+      engine.addRect({ left: 40, top: 10, width: 20, height: 20 })
+      engine.selectAllLayers()
+      const groupId = engine.groupSelection()!
+      if (restriction === 'locked') engine.setLayerLocked(groupId, true)
+      else engine.setLayerVisible(groupId, false)
+      const freeId = engine.addRect({
+        left: 80,
+        top: 10,
+        width: 20,
+        height: 20,
+      })
+      const group = findObject(engine, groupId) as Group
+      const child = group.getObjects()[0]
+      const before = child.getXY()
+      engine.selectLayer(childId)
+      engine.selectLayer(freeId, true)
+      expect(child.parent).toBe(group)
+      expect(child.group).toBeInstanceOf(ActiveSelection)
+      onChanged.mockClear()
+
+      expect(engine.nudgeSelection(10, 0)).toBe(true)
+
+      expect(child.getXY().x).toBeCloseTo(before.x)
+      expect(child.getXY().y).toBeCloseTo(before.y)
+      expect(findObject(engine, freeId).getXY().x).toBeCloseTo(90)
+      expect(onChanged).toHaveBeenCalledExactlyOnceWith('object-modified')
+    },
+  )
+
   it('moves a grid cell and its owned image exactly once', () => {
     const { engine } = createEngine()
     const cellId = engine.addRect({

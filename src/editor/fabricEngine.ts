@@ -2730,7 +2730,9 @@ export class FabricEditorEngine {
         if (!ancestor.visible || (ancestor as EditorObject).editorLocked) {
           return false
         }
-        ancestor = ancestor.group
+        // ActiveSelection temporarily replaces group; parent still points to
+        // the persistent group whose lock and visibility must be respected.
+        ancestor = ancestor.parent ?? ancestor.group
       }
       return true
     })

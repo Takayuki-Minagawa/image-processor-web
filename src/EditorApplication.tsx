@@ -3272,6 +3272,14 @@ export default function EditorApplication() {
   const exportImage = async (action: ExportImageAction): Promise<void> => {
     const engine = engineRef.current
     if (!engine || busyRef.current) throw new Error(ui.exportFailed)
+    if (
+      action === 'download' &&
+      exportSettings.format === 'svg' &&
+      exportSettings.svgScope === 'selection' &&
+      engine.getSelectedLayerIds().length === 0
+    ) {
+      throw new Error(ui.exportSelectionRequired)
+    }
     beginBusy()
     try {
       if (action === 'clipboard') {

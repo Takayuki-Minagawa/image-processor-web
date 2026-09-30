@@ -61,6 +61,7 @@ export interface EditorUiCopy {
   clipboardDenied: string
   clipboardFailed: string
   exportFailed: string
+  exportSelectionRequired: string
   exportSucceeded: string
   exportUnsupported: string
   exportTooLarge: string
@@ -197,6 +198,7 @@ export const JAPANESE_EDITOR_UI_COPY: EditorUiCopy = {
   clipboardFailed:
     '画像をコピーできませんでした。再試行するか、ダウンロードを利用してください。',
   exportFailed: '画像を書き出せませんでした。',
+  exportSelectionRequired: 'SVGとして書き出すオブジェクトを選択してください。',
   exportSucceeded: '画像を書き出しました。',
   exportUnsupported:
     'このブラウザーは選択した画像形式に対応していません。PNGで再試行してください。',
