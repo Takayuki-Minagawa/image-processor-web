@@ -86,13 +86,13 @@ test('全選択は非表示とロックされたレイヤーを変更しない',
   await expect(layerRows(page)).toHaveCount(2)
   await layerRows(page)
     .first()
-    .getByRole('button', { name: 'ロック', exact: true })
+    .getByRole('button', { name: /をロック$/ })
     .click()
   await page.getByRole('button', { name: '矩形を追加' }).click()
   await expect(layerRows(page)).toHaveCount(3)
   await layerRows(page)
     .first()
-    .getByRole('button', { name: 'レイヤーを隠す' })
+    .getByRole('button', { name: /を隠す$/ })
     .click()
   await page.keyboard.press('Control+a')
   await expect(
@@ -102,12 +102,10 @@ test('全選択は非表示とロックされたレイヤーを変更しない',
   ).toHaveCount(1)
   await page.keyboard.press('Delete')
   await expect(layerRows(page)).toHaveCount(2)
-  await expect(page.getByRole('button', { name: 'ロックを解除' })).toHaveCount(
-    1,
-  )
   await expect(
-    page.getByRole('button', { name: '表示する', exact: true }),
+    page.getByRole('button', { name: /のロックを解除$/ }),
   ).toHaveCount(1)
+  await expect(page.getByRole('button', { name: /を表示する$/ })).toHaveCount(1)
 })
 
 test('フォーム・IME変換・処理済みイベントはエディタ操作を発火しない', async ({

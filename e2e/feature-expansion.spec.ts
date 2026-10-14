@@ -724,7 +724,7 @@ test.describe('Feature expansion studio', () => {
         name: '選択範囲だけに適用',
       })
       .check()
-    await inspector.getByRole('slider', { name: '明るさ' }).fill('0.25')
+    await inspector.getByRole('slider', { name: '明るさ' }).fill('25')
     await inspector
       .getByRole('button', { name: '選択範囲へフィルターを適用' })
       .click()
@@ -797,7 +797,7 @@ test.describe('Feature expansion studio', () => {
     await inspector
       .getByRole('checkbox', { name: '選択範囲だけに適用' })
       .check()
-    await inspector.getByRole('slider', { name: '明るさ' }).fill('0.45')
+    await inspector.getByRole('slider', { name: '明るさ' }).fill('45')
     await inspector
       .getByRole('button', { name: '選択範囲へフィルターを適用' })
       .click()

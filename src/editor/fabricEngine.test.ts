@@ -1068,6 +1068,23 @@ describe('FabricEditorEngine feature expansion', () => {
     expect(lefts[1] - lefts[0]).toBeCloseTo(lefts[2] - lefts[1])
   })
 
+  it('aligns fractional coordinates exactly to zero without rounding the other axis', () => {
+    const engine = createEngine()
+    engine.addRect({ left: 0.04, top: 1e-12, width: 240, height: 180 })
+    expect(engine.alignSelection('left')).toBe(true)
+    expect(engine.getSelectionTransform()).toMatchObject({
+      left: 0,
+      top: 1e-12,
+    })
+
+    engine.updateSelectionTransform({ left: 1e-12, top: 0.04 })
+    expect(engine.alignSelection('top')).toBe(true)
+    expect(engine.getSelectionTransform()).toMatchObject({
+      left: 1e-12,
+      top: 0,
+    })
+  })
+
   it('imports a supported SVG as one vector layer and exports the selection', async () => {
     const engine = createEngine()
     const id = await engine.importSvg(

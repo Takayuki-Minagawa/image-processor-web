@@ -608,7 +608,7 @@ test.describe('Pixelweave editor', () => {
 
     await page.getByRole('tab', { name: '調整' }).click()
     const brightness = page.getByRole('slider', { name: '明るさ' })
-    await brightness.fill('0.25')
+    await brightness.fill('25')
     await expect(
       page.getByRole('button', { name: '調整をリセット' }),
     ).toBeEnabled()
@@ -619,7 +619,7 @@ test.describe('Pixelweave editor', () => {
       .getByRole('button', { name: 'レイヤー「sample」を選択' })
       .click()
     await page.getByRole('tab', { name: '調整' }).click()
-    await expect(brightness).toHaveValue('0.25')
+    await expect(brightness).toHaveValue('25')
 
     await page.evaluate(() => {
       Reflect.deleteProperty(globalThis, 'showSaveFilePicker')
