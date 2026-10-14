@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
 const previewHost = '127.0.0.1'
-const previewPort = 4173
+const previewPort = Number(process.env.PLAYWRIGHT_PORT ?? 4173)
 const repository = process.env.GITHUB_REPOSITORY ?? 'local/image-processor-web'
 const repositoryName = repository.split('/')[1] ?? 'image-processor-web'
 const pagesBasePath = `/${repositoryName}/`
@@ -30,7 +30,7 @@ export default defineConfig({
   webServer: {
     command: [
       buildBeforePreview ? 'npm run build' : '',
-      `npm run preview -- --host ${previewHost} --port ${previewPort}`,
+      `npm run preview -- --host ${previewHost} --port ${previewPort} --strictPort`,
     ]
       .filter(Boolean)
       .join(' && '),

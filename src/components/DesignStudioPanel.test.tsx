@@ -188,6 +188,37 @@ describe('DesignStudioPanel', () => {
     })
   })
 
+  it('exposes exactly the current page and updates it after navigation', async () => {
+    const user = userEvent.setup()
+    const onSelectPage = vi.fn()
+    const pages = [
+      ...props().pages,
+      {
+        id: 'page-2',
+        name: 'Page 2',
+        width: 1080,
+        height: 1080,
+        durationMs: 3000,
+      },
+    ]
+    const { rerender } = render(
+      <DesignStudioPanel {...props({ pages, onSelectPage })} />,
+    )
+    const first = screen.getByRole('button', { name: /Page 1/u })
+    const second = screen.getByRole('button', { name: /Page 2/u })
+    expect(first).toHaveAttribute('aria-current', 'page')
+    expect(second).not.toHaveAttribute('aria-current')
+    await user.click(second)
+    expect(onSelectPage).toHaveBeenCalledWith('page-2')
+    rerender(
+      <DesignStudioPanel
+        {...props({ pages, activePageId: 'page-2', onSelectPage })}
+      />,
+    )
+    expect(first).not.toHaveAttribute('aria-current')
+    expect(second).toHaveAttribute('aria-current', 'page')
+  })
+
   it('searches all lazy built-in template metadata and applies a result', async () => {
     const user = userEvent.setup()
     const onApplyTemplate = vi.fn()

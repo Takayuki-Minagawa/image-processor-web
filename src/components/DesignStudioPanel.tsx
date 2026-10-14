@@ -867,6 +867,9 @@ export default function DesignStudioPanel({
                     >
                       <button
                         type="button"
+                        aria-current={
+                          page.id === activePageId ? 'page' : undefined
+                        }
                         onClick={() => void onSelectPage(page.id)}
                       >
                         <span

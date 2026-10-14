@@ -13,6 +13,12 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
+import NumericInput from './components/NumericInput'
+import AdjustmentControl from './components/AdjustmentControl'
+import SelectedTextEditor from './components/SelectedTextEditor'
+import { inspectorCopy } from './i18n.inspector'
+import { LabeledHistory, type HistoryLabel } from './editor/labeledHistory'
 import {
   ArrowDown,
   ArrowUp,
@@ -184,12 +190,6 @@ type InspectorTab = 'layers' | 'adjustments' | 'history'
 type DialogName =
   'menu' | 'new' | 'export' | 'studio' | 'manual' | 'shortcuts' | null
 type StudioTab = 'design' | 'logo' | 'automation' | 'advanced'
-
-interface HistoryLabel {
-  id: number
-  label: string
-  time: string
-}
 
 interface DesignPageState {
   id: string
@@ -634,41 +634,6 @@ function Modal({
   )
 }
 
-function AdjustmentSlider({
-  label,
-  value,
-  min = -1,
-  max = 1,
-  step = 0.01,
-  onChange,
-}: {
-  label: string
-  value: number
-  min?: number
-  max?: number
-  step?: number
-  onChange: (value: number) => void
-}) {
-  const displayed = Math.round(value * 100)
-  return (
-    <label className="adjustment-control">
-      <span>
-        {label}
-        <output>{displayed}</output>
-      </span>
-      <input
-        type="range"
-        aria-label={label}
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-    </label>
-  )
-}
-
 export default function EditorApplication() {
   const canvasElementRef = useRef<HTMLCanvasElement>(null)
   const canvasViewportRef = useRef<HTMLDivElement>(null)
@@ -685,11 +650,12 @@ export default function EditorApplication() {
   const imagePipelineClientRef = useRef<ImagePipelineClient | null>(null)
   const selectionFilterClientRef = useRef<SelectionFilterClient | null>(null)
   const selectionFilterAbortRef = useRef<AbortController | null>(null)
+  const selectionFilterFocusRef = useRef<HTMLElement | null>(null)
   const batchControllerRef = useRef<BatchController | null>(null)
   const batchOutputAbortRef = useRef<AbortController | null>(null)
   const historyRef = useRef(new CompactHistory<EditorSnapshot>({ limit: 100 }))
   const documentHistoryRef = useRef(
-    new CompactHistory<DesignDocumentCheckpoint>({ limit: 100 }),
+    new LabeledHistory<DesignDocumentCheckpoint>({ limit: 100 }),
   )
   const autosaveRef = useRef<Promise<AutosaveRepository> | null>(null)
   const historyTimerRef = useRef<number | null>(null)
@@ -717,7 +683,6 @@ export default function EditorApplication() {
   const createdAtRef = useRef(new Date().toISOString())
   const projectNameRef = useRef('無題のデザイン')
   const sourceNameRef = useRef<string | undefined>(undefined)
-  const historyIdRef = useRef(1)
   const dragDepthRef = useRef(0)
   const dirtyRef = useRef(false)
   const busyRef = useRef(false)
@@ -806,10 +771,11 @@ export default function EditorApplication() {
     canRedo: false,
     size: 0,
     index: -1,
+    currentId: undefined as number | undefined,
   })
-  const [historyLabels, setHistoryLabels] = useState<HistoryLabel[]>([
-    { id: 0, label: '新規ドキュメント', time: nowLabel() },
-  ])
+  const [historyLabels, setHistoryLabels] = useState<readonly HistoryLabel[]>(
+    [],
+  )
   const [savedMacros, setSavedMacros] = useState<MacroRepositoryEntry[]>([])
   const [macroRecording, setMacroRecording] = useState(false)
   const [recordedCommandCount, setRecordedCommandCount] = useState(0)
@@ -853,6 +819,7 @@ export default function EditorApplication() {
   const updateAvailable = pwaState.updateAvailable && !updateDismissed
   const ui = locale === 'en' && englishUi ? englishUi : JAPANESE_EDITOR_UI_COPY
   const designUi = useMemo(() => designStudioCopy(locale), [locale])
+  const inspectorUi = useMemo(() => inspectorCopy(locale), [locale])
 
   const toggleLocale = useCallback(() => {
     if (locale === 'en') {
@@ -1379,6 +1346,14 @@ export default function EditorApplication() {
     [selectedLayer],
   )
 
+  const selectedTextContent = useMemo(
+    () =>
+      selectedTextStyle
+        ? (engineRef.current?.getSelectedTextContent() ?? null)
+        : null,
+    [selectedTextStyle],
+  )
+
   const refreshHistoryState = useCallback(() => {
     const documentHistory = documentHistoryRef.current
     setHistoryState({
@@ -1386,7 +1361,9 @@ export default function EditorApplication() {
       canRedo: documentHistory.canRedo,
       size: documentHistory.size,
       index: documentHistory.index,
+      currentId: documentHistory.currentLabel?.id,
     })
+    setHistoryLabels(documentHistory.labels)
   }, [])
 
   const refreshEditorState = useCallback(() => {
@@ -1719,20 +1696,12 @@ export default function EditorApplication() {
           designPagesRef.current,
           activeDesignPageIdRef.current,
         ),
+        CHANGE_LABELS[reason],
+        nowLabel(),
       )
       dirtyRef.current = true
       setDirty(true)
       refreshHistoryState()
-      setHistoryLabels((entries) =>
-        [
-          ...entries,
-          {
-            id: historyIdRef.current++,
-            label: CHANGE_LABELS[reason],
-            time: nowLabel(),
-          },
-        ].slice(-20),
-      )
       scheduleAutosave(snapshot)
       setDocumentSize({ width: snapshot.width, height: snapshot.height })
       setSelectionTransform(engine?.getSelectionTransform() ?? null)
@@ -2001,6 +1970,8 @@ export default function EditorApplication() {
     historyRef.current.reset(initialSnapshot)
     documentHistoryRef.current.reset(
       cloneDesignDocumentCheckpoint(designPagesRef.current, initialPageId),
+      inspectorCopy(loadLocale()).newDocument,
+      nowLabel(),
     )
     refreshHistoryState()
     refreshEditorState()
@@ -2217,14 +2188,14 @@ export default function EditorApplication() {
   const markDesignDocumentChanged = useCallback(
     (snapshot: EditorSnapshot, label: string) => {
       latestSnapshotRef.current = snapshot
-      documentHistoryRef.current.push(captureDesignDocumentCheckpoint())
+      documentHistoryRef.current.push(
+        captureDesignDocumentCheckpoint(),
+        label,
+        nowLabel(),
+      )
       revisionRef.current += 1
       dirtyRef.current = true
       setDirty(true)
-      setHistoryLabels((entries) => [
-        ...entries.slice(-19),
-        { id: historyIdRef.current++, label, time: nowLabel() },
-      ])
       refreshHistoryState()
       publishDesignPages()
       scheduleAutosave(snapshot)
@@ -2696,7 +2667,11 @@ export default function EditorApplication() {
         latestSnapshotRef.current = snapshot
         revisionRef.current += 1
         historyRef.current.reset(snapshot)
-        documentHistoryRef.current.reset(captureDesignDocumentCheckpoint())
+        documentHistoryRef.current.reset(
+          captureDesignDocumentCheckpoint(),
+          inspectorCopy(loadLocale()).openProject,
+          nowLabel(),
+        )
         refreshHistoryState()
         const name = project.metadata.name
         setProjectName(name)
@@ -2704,13 +2679,7 @@ export default function EditorApplication() {
         createdAtRef.current = project.metadata.createdAt
         sourceNameRef.current = project.metadata.sourceFileName
         saveHandleRef.current = null
-        setHistoryLabels([
-          {
-            id: historyIdRef.current++,
-            label: 'プロジェクトを開く',
-            time: nowLabel(),
-          },
-        ])
+
         dirtyRef.current = false
         setDirty(false)
         setStatus(
@@ -2961,15 +2930,13 @@ export default function EditorApplication() {
       activeDesignPageIdRef.current = pageId
       publishDesignPages()
       historyRef.current.reset(snapshot)
-      documentHistoryRef.current.reset(captureDesignDocumentCheckpoint())
+      documentHistoryRef.current.reset(
+        captureDesignDocumentCheckpoint(),
+        inspectorCopy(loadLocale()).newDocument,
+        nowLabel(),
+      )
       refreshHistoryState()
-      setHistoryLabels([
-        {
-          id: historyIdRef.current++,
-          label: '新規ドキュメント',
-          time: nowLabel(),
-        },
-      ])
+
       dirtyRef.current = false
       setDirty(false)
       setLayers([])
@@ -3050,7 +3017,11 @@ export default function EditorApplication() {
       latestSnapshotRef.current = snapshot
       revisionRef.current += 1
       historyRef.current.reset(snapshot)
-      documentHistoryRef.current.reset(captureDesignDocumentCheckpoint())
+      documentHistoryRef.current.reset(
+        captureDesignDocumentCheckpoint(),
+        inspectorCopy(loadLocale()).restoreAutosave,
+        nowLabel(),
+      )
       refreshHistoryState()
       setProjectName(project.metadata.name)
       projectNameRef.current = project.metadata.name
@@ -3059,13 +3030,7 @@ export default function EditorApplication() {
       setRecoveryAvailable(false)
       dirtyRef.current = true
       setDirty(true)
-      setHistoryLabels([
-        {
-          id: historyIdRef.current++,
-          label: '自動保存を復元',
-          time: nowLabel(),
-        },
-      ])
+
       setStatus({ kind: 'success', message: '前回の編集を復元しました。' })
       void enqueueAutosave(snapshot, generation).catch(() => undefined)
     } catch (error) {
@@ -3150,6 +3115,7 @@ export default function EditorApplication() {
   )
 
   const applyFiltersToSelection = useCallback((): void => {
+    if (busyRef.current) return
     const mask = selectionMask
     if (!mask) {
       setStatus({
@@ -3158,6 +3124,10 @@ export default function EditorApplication() {
       })
       return
     }
+    selectionFilterFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
     runEditorOperation(async (engine) => {
       const controller = new AbortController()
       selectionFilterAbortRef.current = controller
@@ -3165,6 +3135,7 @@ export default function EditorApplication() {
       setSelectionFilterProgress({ progress: 0, stage: 'prepare' })
       try {
         const source = await engine.getDocumentImageData()
+        controller.signal.throwIfAborted()
         if (source.width !== mask.width || source.height !== mask.height) {
           throw new RangeError(
             '選択範囲の寸法が現在のドキュメントと一致しません。',
@@ -3192,6 +3163,7 @@ export default function EditorApplication() {
             transferOwnership: true,
           },
         )
+        controller.signal.throwIfAborted()
         await engine.addImageDataLayer(
           {
             ...result,
@@ -3199,6 +3171,7 @@ export default function EditorApplication() {
           },
           'Selection filter',
           'filter',
+          controller.signal,
         )
         setStatus({
           kind: 'success',
@@ -3222,6 +3195,17 @@ export default function EditorApplication() {
       }
     })
   }, [filters, runEditorOperation, selectionMask])
+
+  useEffect(() => {
+    if (busy || selectionFilterRunning || !selectionFilterFocusRef.current)
+      return
+    const target = selectionFilterFocusRef.current
+    selectionFilterFocusRef.current = null
+    const frame = window.requestAnimationFrame(() => {
+      if (target.isConnected) target.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [busy, selectionFilterRunning])
 
   const deleteActiveSelection = useCallback((): void => {
     const engine = engineRef.current
@@ -4712,15 +4696,17 @@ export default function EditorApplication() {
                 ).map(([label, field]) => (
                   <label className="compact-number" key={field}>
                     <span>{label}</span>
-                    <input
-                      type="number"
+                    <NumericInput
+                      key={`${activeDesignPageId}:${selectedIds.join(',')}:${field}:${selectedLayer?.locked}`}
+                      label={label}
+                      locale={locale}
+                      disabled={selectedLayer?.locked}
                       min={
                         field === 'width' || field === 'height' ? 1 : undefined
                       }
-                      value={Math.round(selectionTransform[field] * 10) / 10}
-                      onChange={(event) =>
-                        updateTransform(field, Number(event.target.value))
-                      }
+                      step={0.1}
+                      value={Number(selectionTransform[field].toPrecision(15))}
+                      onCommit={(value) => updateTransform(field, value)}
                     />
                   </label>
                 ))}
@@ -4964,6 +4950,14 @@ export default function EditorApplication() {
             <span role="status" aria-live="polite">
               {status.message}
             </span>
+            <span className="current-page-status">
+              {inspectorUi.currentPage(
+                designPages.find((page) => page.id === activeDesignPageId)
+                  ?.name ?? '',
+                designPages.findIndex((page) => page.id === activeDesignPageId),
+                designPages.length,
+              )}
+            </span>
             <span className="status-spacer" />
             <span>sRGB · 8 bit</span>
             <span>
@@ -5046,27 +5040,32 @@ export default function EditorApplication() {
                       ))}
                     </select>
                   </label>
-                  <label className="opacity-control">
-                    <span>
-                      不透明度
-                      <output>
-                        {Math.round(selectedLayer.opacity * 100)}%
-                      </output>
-                    </span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={selectedLayer.opacity}
-                      onChange={(event) =>
-                        engineRef.current?.setLayerOpacity(
-                          selectedLayer.id,
-                          Number(event.target.value),
-                        )
-                      }
+                  <AdjustmentControl
+                    key={selectedLayer.id}
+                    locale={locale}
+                    label={inspectorUi.opacity}
+                    min={0}
+                    unit="%"
+                    value={selectedLayer.opacity}
+                    onChange={(value) =>
+                      engineRef.current?.setLayerOpacity(
+                        selectedLayer.id,
+                        value,
+                      )
+                    }
+                  />
+                  {selectedTextContent ? (
+                    <SelectedTextEditor
+                      locale={locale}
+                      value={selectedTextContent}
+                      disabled={busy}
+                      onApply={(settings) => {
+                        flushPendingHistory()
+                        engineRef.current?.setSelectedTextContent(settings)
+                        flushPendingHistory()
+                      }}
                     />
-                  </label>
+                  ) : null}
                   {selectedTextStyle ? (
                     <fieldset className="text-decoration-controls">
                       <legend>テキスト装飾</legend>
@@ -5265,6 +5264,8 @@ export default function EditorApplication() {
                     className={`layer-row ${layer.selected ? 'selected' : ''} ${!layer.visible ? 'hidden' : ''}`}
                     key={layer.id}
                     role="listitem"
+                    aria-label={inspectorUi.layerGroup(layer.name)}
+                    data-layer-id={layer.id}
                     style={{ marginInlineStart: `${layer.depth * 14}px` }}
                   >
                     {layer.hasChildren ? (
@@ -5291,7 +5292,12 @@ export default function EditorApplication() {
                     <button
                       className="layer-icon-button"
                       type="button"
-                      aria-label={layer.visible ? 'レイヤーを隠す' : '表示する'}
+                      aria-label={
+                        layer.visible
+                          ? inspectorUi.hideLayer(layer.name)
+                          : inspectorUi.showLayer(layer.name)
+                      }
+                      aria-pressed={!layer.visible}
                       onClick={(event) => {
                         event.stopPropagation()
                         engineRef.current?.setLayerVisible(
@@ -5364,7 +5370,12 @@ export default function EditorApplication() {
                     <button
                       className="layer-icon-button"
                       type="button"
-                      aria-label={layer.locked ? 'ロックを解除' : 'ロック'}
+                      aria-label={
+                        layer.locked
+                          ? inspectorUi.unlockLayer(layer.name)
+                          : inspectorUi.lockLayer(layer.name)
+                      }
+                      aria-pressed={layer.locked}
                       onClick={(event) => {
                         event.stopPropagation()
                         engineRef.current?.setLayerLocked(
@@ -5495,35 +5506,43 @@ export default function EditorApplication() {
                   の「選択・背景・スクリプト」で選択範囲を作成します。
                 </p>
               )}
-              <div className="adjustments">
-                <AdjustmentSlider
-                  label="明るさ"
+              <div
+                className="adjustments"
+                key={`${activeDesignPageId}:${selectedIds.join(',')}`}
+              >
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.brightness}
                   value={filters.brightness}
                   onChange={(value) =>
                     applyFilters({ ...filters, brightness: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="コントラスト"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.contrast}
                   value={filters.contrast}
                   onChange={(value) =>
                     applyFilters({ ...filters, contrast: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="彩度"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.saturation}
                   value={filters.saturation}
                   onChange={(value) =>
                     applyFilters({ ...filters, saturation: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="色相"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.hue}
                   value={filters.hue}
                   onChange={(value) => applyFilters({ ...filters, hue: value })}
                 />
-                <AdjustmentSlider
-                  label="ぼかし"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.blur}
                   value={filters.blur}
                   min={0}
                   onChange={(value) =>
@@ -5551,8 +5570,9 @@ export default function EditorApplication() {
                     }
                   />
                 </label>
-                <AdjustmentSlider
-                  label="シャープ"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.sharpen}
                   value={filters.sharpen}
                   min={0}
                   max={2}
@@ -5560,8 +5580,9 @@ export default function EditorApplication() {
                     applyFilters({ ...filters, sharpen: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="エンボス"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.emboss}
                   value={filters.emboss}
                   min={0}
                   max={2}
@@ -5569,33 +5590,29 @@ export default function EditorApplication() {
                     applyFilters({ ...filters, emboss: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="ノイズ"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.noise}
                   value={filters.noise}
                   min={0}
                   onChange={(value) =>
                     applyFilters({ ...filters, noise: value })
                   }
                 />
-                <label className="adjustment-control">
-                  <span>
-                    ピクセレート
-                    <output>{filters.pixelate}px</output>
-                  </span>
-                  <input
-                    type="range"
-                    min="1"
-                    max="64"
-                    step="1"
-                    value={filters.pixelate}
-                    onChange={(event) =>
-                      applyFilters({
-                        ...filters,
-                        pixelate: Number(event.target.value),
-                      })
-                    }
-                  />
-                </label>
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.pixelate}
+                  integer
+                  min={1}
+                  max={64}
+                  step={1}
+                  scale={1}
+                  unit="px"
+                  value={filters.pixelate}
+                  onChange={(value) =>
+                    applyFilters({ ...filters, pixelate: value })
+                  }
+                />
                 <div className="filter-toggle-grid">
                   <label className="toggle-row compact">
                     <span>セピア</span>
@@ -5624,8 +5641,9 @@ export default function EditorApplication() {
                     />
                   </label>
                 </div>
-                <AdjustmentSlider
-                  label="ガンマ"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.gamma}
                   value={filters.gamma}
                   min={0.1}
                   max={2.2}
@@ -5633,46 +5651,52 @@ export default function EditorApplication() {
                     applyFilters({ ...filters, gamma: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="色温度"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.temperature}
                   value={filters.temperature}
                   onChange={(value) =>
                     applyFilters({ ...filters, temperature: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="色かぶり補正"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.tint}
                   value={filters.tint}
                   onChange={(value) =>
                     applyFilters({ ...filters, tint: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="ビネット"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.vignette}
                   value={filters.vignette}
                   min={0}
                   onChange={(value) =>
                     applyFilters({ ...filters, vignette: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="デュオトーン"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.duotone}
                   value={filters.duotone}
                   min={0}
                   onChange={(value) =>
                     applyFilters({ ...filters, duotone: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="ハーフトーン"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.halftone}
                   value={filters.halftone}
                   min={0}
                   onChange={(value) =>
                     applyFilters({ ...filters, halftone: value })
                   }
                 />
-                <AdjustmentSlider
-                  label="グリッチ"
+                <AdjustmentControl
+                  locale={locale}
+                  label={inspectorUi.glitch}
                   value={filters.glitch}
                   min={0}
                   onChange={(value) =>
@@ -5703,24 +5727,6 @@ export default function EditorApplication() {
                       <Sparkles aria-hidden="true" />
                       選択範囲へフィルターを適用
                     </button>
-                    {selectionFilterRunning ? (
-                      <>
-                        <progress
-                          max="1"
-                          value={selectionFilterProgress?.progress ?? 0}
-                          aria-label="選択範囲フィルターの進捗"
-                        />
-                        <button
-                          className="secondary-button full-width"
-                          type="button"
-                          onClick={() =>
-                            selectionFilterAbortRef.current?.abort()
-                          }
-                        >
-                          キャンセル
-                        </button>
-                      </>
-                    ) : null}
                   </div>
                 ) : null}
                 <button
@@ -5748,10 +5754,20 @@ export default function EditorApplication() {
                 直近100件まで端末内に保持します。ズームとパンは履歴へ含めません。
               </p>
               <ol className="history-list">
-                {[...historyLabels].reverse().map((entry, index) => (
-                  <li key={entry.id} className={index === 0 ? 'current' : ''}>
+                {[...historyLabels].reverse().map((entry) => (
+                  <li
+                    key={entry.id}
+                    className={
+                      entry.id === historyState.currentId ? 'current' : ''
+                    }
+                    aria-current={
+                      entry.id === historyState.currentId ? 'step' : undefined
+                    }
+                  >
                     <span className="history-marker">
-                      {index === 0 ? <Glyph>✓</Glyph> : null}
+                      {entry.id === historyState.currentId ? (
+                        <Glyph>✓</Glyph>
+                      ) : null}
                     </span>
                     <span>
                       <strong>{entry.label}</strong>
@@ -6581,6 +6597,32 @@ export default function EditorApplication() {
           />
         </Suspense>
       ) : null}
+      {selectionFilterRunning
+        ? createPortal(
+            <Modal
+              title={inspectorUi.filterRunning}
+              description={inspectorUi.filterProgressDescription}
+              closeLabel={ui.close}
+              onClose={() => selectionFilterAbortRef.current?.abort()}
+            >
+              <div className="operation-progress-dialog">
+                <progress
+                  max="1"
+                  value={selectionFilterProgress?.progress ?? 0}
+                  aria-label={inspectorUi.filterProgress}
+                />
+                <button
+                  className="secondary-button full-width"
+                  type="button"
+                  onClick={() => selectionFilterAbortRef.current?.abort()}
+                >
+                  {inspectorUi.cancelFilter}
+                </button>
+              </div>
+            </Modal>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

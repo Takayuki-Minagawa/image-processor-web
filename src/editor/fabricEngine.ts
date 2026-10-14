@@ -237,6 +237,19 @@ export interface TextStyleSettings {
   lineHeight?: number
 }
 
+export interface SelectedTextContent {
+  id: string
+  text: string
+  fontSize: number
+  fontFamily: string
+  locked: boolean
+}
+
+export interface TextContentSettings {
+  text: string
+  fontSize: number
+}
+
 export interface BrushOptions {
   color?: string
   size?: number
@@ -344,6 +357,10 @@ export interface ImportImageOptions {
    * to the decoded image in the same mutation as adding the image.
    */
   resizeCanvasIfEmpty?: boolean
+  /** Cancels decoding before the image is added to the document. */
+  signal?: AbortSignal
+  /** Labels a processed image insertion without wrapping decoding in a transaction. */
+  changeReason?: EditorChangeReason
 }
 
 export interface CanvasDropTarget {
@@ -1096,9 +1113,13 @@ export class FabricEditorEngine {
     let image: FabricImage | undefined
 
     try {
+      options.signal?.throwIfAborted()
       const declared = inspectEmbeddedImageDataUrl(dataUrl).dimensions
-      const loadedImage = await FabricImage.fromURL(dataUrl)
+      const loadedImage = await FabricImage.fromURL(dataUrl, {
+        signal: options.signal,
+      })
       image = loadedImage
+      options.signal?.throwIfAborted()
       this.assertUsable()
       assertSafeImageDimensions({
         width: loadedImage.width,
@@ -1144,7 +1165,7 @@ export class FabricEditorEngine {
         scaleY: scale,
       })
 
-      this.mutate('object-added', () => {
+      this.mutate(options.changeReason ?? 'object-added', () => {
         if (resizeCanvas) {
           this.documentWidth = documentDimension(canvasWidth)
           this.documentHeight = documentDimension(canvasHeight)
@@ -1159,6 +1180,8 @@ export class FabricEditorEngine {
       if (image) {
         this.disposeResources([image], this.canvas.getObjects())
       }
+      // Fabric's decoder may reject with the abort Event instead of an Error.
+      options.signal?.throwIfAborted()
       if (!isAbortLikeError(error)) {
         this.emitStatus('画像を読み込めませんでした。', 'error')
       }
@@ -1789,6 +1812,57 @@ export class FabricEditorEngine {
     )
     this.addAndSelect(textObject)
     return this.requireEditorId(textObject)
+  }
+
+  /** Reads the actual multiline content, including the stored vertical layout. */
+  public getSelectedTextContent(): SelectedTextContent | null {
+    const selected = this.canvas.getActiveObjects()
+    if (selected.length !== 1 || !(selected[0] instanceof IText)) return null
+    const text = selected[0]
+    let locked = false
+    let ancestor: FabricObject | undefined = text
+    while (ancestor) {
+      locked ||= Boolean((ancestor as EditorObject).editorLocked)
+      ancestor = ancestor.parent ?? ancestor.group
+    }
+    return {
+      id: this.requireEditorId(text as EditorObject),
+      text: text.text,
+      fontSize: text.fontSize,
+      fontFamily: text.fontFamily,
+      locked,
+    }
+  }
+
+  /** Commits the inspector's draft as one undoable change. */
+  public setSelectedTextContent(settings: TextContentSettings): boolean {
+    this.assertUsable()
+    const current = this.getSelectedTextContent()
+    if (
+      !current ||
+      current.locked ||
+      typeof settings.text !== 'string' ||
+      !Number.isFinite(settings.fontSize) ||
+      settings.fontSize < 6 ||
+      settings.fontSize > 512 ||
+      (settings.text === current.text && settings.fontSize === current.fontSize)
+    ) {
+      return false
+    }
+    const text = this.canvas.getActiveObjects()[0] as IText
+    this.mutate('text-changed', () => {
+      if (text.isEditing) text.exitEditing()
+      text.set({ text: settings.text, fontSize: settings.fontSize })
+      text.initDimensions()
+      text.setCoords()
+      text.set('dirty', true)
+      const group = text.parent ?? text.group
+      if (group) {
+        group.triggerLayout()
+        group.setCoords()
+      }
+    })
+    return true
   }
 
   public setSelectedFontFamily(fontFamily: string): boolean {
@@ -3039,9 +3113,37 @@ export class FabricEditorEngine {
         : union
 
     const translate = (object: FabricObject, dx: number, dy: number) => {
+      const bound = bounds.get(object)!
+      const alignedCoordinate = (
+        position: number,
+        delta: number,
+        extent: number,
+        targetsZero: boolean,
+      ) => {
+        const next = position + delta
+        // Bounding-box subtraction can leave a few floating-point ULPs when
+        // aligning to the canvas origin. Preserve other coordinates exactly.
+        const tolerance =
+          Number.EPSILON *
+          Math.max(1, Math.abs(position), Math.abs(delta), extent) *
+          4
+        return targetsZero && delta !== 0 && Math.abs(next) <= tolerance
+          ? 0
+          : next
+      }
       object.set({
-        left: object.left + dx,
-        top: object.top + dy,
+        left: alignedCoordinate(
+          object.left,
+          dx,
+          bound.width,
+          mode === 'left' && frame.left === 0,
+        ),
+        top: alignedCoordinate(
+          object.top,
+          dy,
+          bound.height,
+          mode === 'top' && frame.top === 0,
+        ),
       })
       object.setCoords()
     }
@@ -4258,8 +4360,10 @@ export class FabricEditorEngine {
     image: Pick<ImageData, 'width' | 'height' | 'data'>,
     name = 'Processed image',
     reason: EditorChangeReason = 'background-removal',
+    signal?: AbortSignal,
   ): Promise<string> {
     this.assertUsable()
+    signal?.throwIfAborted()
     assertSafeImageDimensions({ width: image.width, height: image.height })
     if (
       !(image.data instanceof Uint8ClampedArray) ||
@@ -4277,9 +4381,13 @@ export class FabricEditorEngine {
     const pixels = context.createImageData(image.width, image.height)
     pixels.data.set(image.data)
     context.putImageData(pixels, 0, 0)
-    return this.runAtomic(reason, () =>
-      this.importImage(output.toDataURL('image/png'), name),
-    )
+    const dataUrl = output.toDataURL('image/png')
+    if (signal) {
+      // Cancellation must happen before insertion. Restoring an untouched
+      // document would discard the selection, viewport, and staged UI values.
+      return this.importImage(dataUrl, name, { signal, changeReason: reason })
+    }
+    return this.runAtomic(reason, () => this.importImage(dataUrl, name))
   }
 
   public async copySelection(): Promise<boolean> {

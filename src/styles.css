@@ -508,8 +508,15 @@ svg {
   gap: 12px;
   min-height: 48px;
   padding: 0 12px;
+  overflow-x: auto;
   border-bottom: 1px solid var(--line);
   background: rgba(20, 22, 30, 0.96);
+}
+
+.context-bar > *,
+.context-bar button,
+.transform-options > * {
+  flex-shrink: 0;
 }
 
 .history-controls {
@@ -544,9 +551,9 @@ svg {
 }
 
 .transform-options {
-  flex: 1;
+  flex: 1 0 auto;
   gap: 5px;
-  min-width: 0;
+  min-width: max-content;
 }
 
 .alignment-options {
@@ -595,6 +602,55 @@ svg {
   background: transparent;
   font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-size: 9px;
+}
+
+.numeric-input-field {
+  display: inline-grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.numeric-input-field input {
+  min-width: 0;
+}
+
+.numeric-input-field input[aria-invalid='true'] {
+  outline: 2px solid var(--red);
+  outline-offset: 1px;
+}
+
+.numeric-input-error {
+  max-width: 230px;
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.compact-number:has(.numeric-input-error) {
+  height: auto;
+  min-height: 30px;
+  padding-block: 5px;
+}
+
+.adjustment-control .numeric-input-field,
+.opacity-control .numeric-input-field {
+  display: grid;
+  width: 100%;
+}
+
+.adjustment-control .numeric-input-field input,
+.opacity-control .numeric-input-field input {
+  width: 100%;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-3);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 10px;
 }
 
 .zoom-controls {
@@ -935,6 +991,14 @@ input[type='range'] {
   flex: 1;
 }
 
+.current-page-status {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .inspector {
   position: relative;
   z-index: 10;
@@ -1076,12 +1140,16 @@ input[type='range'] {
 
 .layer-properties {
   display: grid;
+  min-height: 0;
+  max-height: 60%;
+  flex: 0 1 auto;
   gap: 12px;
   margin: 0 12px 12px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #14161e;
+  overflow-y: auto;
 }
 
 .layer-properties label,
@@ -1109,6 +1177,89 @@ input[type='range'] {
 .layer-properties svg {
   width: 13px;
   height: 13px;
+}
+
+.selected-text-editor fieldset {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.selected-text-editor legend {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.selected-text-editor textarea,
+.selected-text-editor input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-3);
+  font: inherit;
+  font-size: 12px;
+}
+
+.selected-text-editor textarea {
+  min-height: 86px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.selected-text-editor small,
+.selected-text-editor .panel-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.selected-text-editor [role='alert'] {
+  margin: 0;
+  color: var(--red);
+  font-size: 10px;
+}
+
+.selected-text-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.selected-text-actions button {
+  min-height: 32px;
+  flex: 1 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-3);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.selected-text-actions button[type='submit'] {
+  border-color: var(--violet);
+  color: white;
+  background: var(--violet);
+}
+
+.selected-text-actions button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.inspector-content:has(.selected-text-editor) .layer-list {
+  min-height: 96px;
 }
 
 .text-decoration-controls {
@@ -1340,6 +1491,10 @@ select,
   font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-size: 7px;
   text-transform: uppercase;
+}
+
+.layer-row.selected .layer-name span {
+  color: var(--muted);
 }
 
 .layer-rename-input {
@@ -1703,6 +1858,17 @@ select,
 
 .modal-wide {
   width: min(1120px, 100%);
+}
+
+.operation-progress-dialog {
+  display: grid;
+  gap: 16px;
+  padding: 0 24px 24px;
+}
+
+.operation-progress-dialog progress {
+  width: 100%;
+  accent-color: var(--violet);
 }
 
 .studio-tabs {
@@ -2856,11 +3022,6 @@ kbd {
   .opacity-option {
     display: none;
   }
-
-  .compact-number:nth-of-type(4),
-  .compact-number:nth-of-type(5) {
-    display: none;
-  }
 }
 
 @media (max-width: 900px) {
@@ -2997,6 +3158,13 @@ kbd {
   .canvas-rulers,
   .statusbar > span:nth-last-child(-n + 3) {
     display: none;
+  }
+
+  .statusbar > [role='status'] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .inspector {

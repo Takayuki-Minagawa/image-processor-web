@@ -61,6 +61,14 @@ export interface DesignStudioCopy {
   text: {
     heading: string
     content: string
+    edit: string
+    body: string
+    fontSize: string
+    applyChanges: string
+    resetChanges: string
+    invalidFontSize: string
+    editingHint: string
+    locked: string
     horizontal: string
     vertical: string
     auto: string
@@ -248,6 +256,15 @@ const JA: DesignStudioCopy = {
   text: {
     heading: 'テキストとフォント',
     content: 'テキスト',
+    edit: '本文を編集',
+    body: '本文',
+    fontSize: 'フォントサイズ (px)',
+    applyChanges: '本文を適用',
+    resetChanges: '変更を取り消す',
+    invalidFontSize: 'フォントサイズは6〜512の数値で入力してください。',
+    editingHint:
+      '適用ボタンまたは⌘/Ctrl+Enterで確定。Escapeで変更を取り消します。',
+    locked: 'ロックを解除すると本文を編集できます。',
     horizontal: '横書き',
     vertical: '縦書き',
     auto: '自動拡張',
@@ -436,6 +453,15 @@ const EN: DesignStudioCopy = {
   text: {
     heading: 'Text and fonts',
     content: 'Text',
+    edit: 'Edit text',
+    body: 'Text content',
+    fontSize: 'Font size (px)',
+    applyChanges: 'Apply text changes',
+    resetChanges: 'Discard changes',
+    invalidFontSize: 'Enter a font size from 6 to 512.',
+    editingHint:
+      'Apply or press ⌘/Ctrl+Enter to commit. Escape discards changes.',
+    locked: 'Unlock the layer to edit its text.',
     horizontal: 'Horizontal',
     vertical: 'Vertical',
     auto: 'Auto width',
