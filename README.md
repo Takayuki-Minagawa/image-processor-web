@@ -5,6 +5,7 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 ## 主な機能
 
 - PNG / JPEG / WebP / SVGのドラッグ&ドロップ、ファイル選択、クリップボード貼り付け
+- PDFのファイル選択・ドラッグ&ドロップ、ページ範囲・DPIを指定した原寸の背景画像取込、新規文書または既存文書へのページ追加
 - 選択、移動、拡大縮小、回転、パン、ズーム、crop、整列、等間隔分布、ルーラーからドラッグできるガイド、スナップ
 - ブラシ、消しゴム、矩形、楕円、テキスト、縁取り、グラデーション、シャドウ、字間・行間、円弧テキスト
 - レイヤーの追加、複製、削除、名前変更、並べ替え、表示、ロック、透明度、基本ブレンド、調整レイヤー、入れ子グループ、クリッピングフレーム、8bitレイヤーマスク
@@ -21,7 +22,7 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 - 要素アニメーション、ページ遷移、プレゼンテーションプレビュー
 - 限定コマンドだけを実行する`eval`なしのスクリプトDSL、端末内への保存、`runScript`マクロ登録
 - 編集可能なschema version 4の`.pwx.json`プロジェクト保存と、version 1〜3プロジェクトの自動移行
-- PNG / JPEG / WebP / SVG、複数ページPNG ZIP、mm物理寸法・DPI・bleed・crop mark・混在ページ寸法対応PDF、GIF、対応ブラウザでのMP4 / WebM書き出し
+- PNG / JPEG / WebP / SVG、複数ページPNG ZIP、mm物理寸法・DPI・bleed・crop mark・混在ページ寸法に対応する画像PDF（可逆圧縮／JPEG品質選択）、GIF、対応ブラウザでのMP4 / WebM書き出し
 - 書き出しダイアログからPNGをクリップボードへコピーし、他のアプリへ貼り付け（対応ブラウザ・権限が必要）
 - OPFSのページ差分保存・旧形式復旧・localStorage fallbackを備えた自動保存
 - PWAインストール、オフライン起動
@@ -63,9 +64,17 @@ descriptorにはversion、bytes、SHA-256 `309c8469258dda742793dce0ebea8e6dd3931
 
 version 1・2の単一Canvasは1ページのドキュメントへ、version 3の複数ページは静止timelineを補ってversion 4へ移行します。次回保存時はversion 4になります。serializerは互換aliasを重複出力しません。未知version、寸法不一致、過大な画像・レイヤー・マスク・timelineは、現在のドキュメントを変更せず明示エラーにします。
 
+### PDFを背景にした制作
+
+「開く」またはドロップでPDFを選び、サムネイル・用紙寸法を確認してページ範囲と読込DPIを指定します。選んだページは原寸のロック済み背景画像になり、既存の文字・図形・画像を重ねられます。元PDFの文字・図形を直接編集する機能ではありません。保存形式は既存の`.pwx.json`で、元PDFのbytesやファイル名は埋め込まず、取込ページ番号・寸法・DPI・回転を任意のschema v4メタデータに記録します。
+
+「書き出す」→「PDF 画像として出力…」、またはStudioのデザイン書き出しからPDF設定へ進めます。既定の可逆圧縮は線画・文字向け、JPEGは写真向けで画質を指定できます。書き出し前にページ数・仕上がりmm・DPIを確認でき、背景の読込DPIを超えた出力には警告が出ます。透明部分は白に合成され、文字検索、ベクター、元PDFのリンク・しおり・タグ・フォーム・添付・電子署名の有効性は保持されません。
+
+PDF入力は50 MiB、原文書1,000ページ、1回20ページ、1辺8,192 px、1ページ32 MP・選択合計64 MPまでです。パスワードが必要なPDFとXFAは対応しません。取込・書き出しの上限、ローカル処理と保存の境界、試験対象は[PDF入出力仕様](./docs/PDF_IO.md)に記録しています。cropや白塗り、再編集用プロジェクト保存は、秘密情報の完全削除を保証する機能ではありません。
+
 ## ローカル実行
 
-Node.js 22.12以上を用意してください。
+Node.js 22.13以上を用意してください。
 
 ```bash
 npm ci
@@ -75,6 +84,7 @@ npm run dev
 表示されたローカルURLをブラウザで開きます。検証コマンドは次のとおりです。
 
 ```bash
+npm run format:check
 npm test
 npm run lint
 npm run build
@@ -90,7 +100,7 @@ npm run verify:background-model -- /path/to/u2netp.onnx /path/to/representative.
 
 `npm run test:e2e`はGitHub Pagesと同じ
 `/image-processor-web/`サブパスで本番ビルドを生成し、Vite previewに対して
-Playwrightを実行します。既存の`dist`を再利用するCIでは
+Playwrightを実行します。Pages設定で生成済みの`dist`を再利用する場合は
 `PLAYWRIGHT_SKIP_BUILD=true npm run test:e2e`を使用します。
 
 コード品質の確認にはESLint（TypeScript / React Hooks）とPrettierを使用します。
@@ -123,18 +133,19 @@ typescript-eslint向けには`@typescript/typescript6`を`typescript` aliasと�
 
 ## GitHub Pages
 
-このリポジトリにはGitHub Pages配布用の`.github/workflows/pages.yml`が含まれています。`main`へのpushまたは手動実行時に、lint、単体テスト、Vite本番ビルド、Pagesサブパス上のブラウザE2E、Pages配布を順に実行します。E2Eが失敗した場合は成果物をアップロードせず、デプロイも開始しません。
+このリポジトリにはGitHub Pages配布用の`.github/workflows/pages.yml`が含まれています。`main`へのpushまたは手動実行時に、依存をインストールして本番ビルドを生成し、Pagesへ配布します。format・lint・単体テスト・ブラウザE2Eはマージ前にローカルで実行し、結果をPRへ記録します。Pages workflow自体はこれらのテストを再実行しません。
 
 初回はリポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に設定してください。その後、`main`へのpush、または **Actions** からの手動実行で配布を開始できます。公開URLは所有者名とリポジトリ名により決まり、通常は`https://<owner>.github.io/<repository>/`です。実際に公開されたかどうかと正確なURLは、成功したActions実行の`github-pages`環境に表示されるdeployment URLで確認してください。このREADMEだけでは公開済みを示しません。
 
 プロジェクトサイトのbase pathはビルド時に`GITHUB_REPOSITORY`から決まります。このリポジトリ名でビルドする場合は`/image-processor-web/`、ローカル開発では`/`です。favicon、manifest、PWAアイコンは`./`相対パスで参照するため、プロジェクトサイトのサブパスでも同じ配布先を解決します。
 
-PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証します。PRを`main`へマージした後、Pagesの本番デプロイが開始されます。
+`.github/workflows/ci.yml`は必要時にActionsから手動実行できます。PRの作成・更新では自動実行しません。PRを`main`へマージした後はPagesの本番デプロイが開始されるため、ローカル検証完了とコードレビューを先に確認してください。
 
 ## 設計資料
 
 - [実装状況](./docs/IMPLEMENTATION_STATUS.md)
 - [Architecture Decision Records](./docs/adr/)
+- [PDF入出力仕様と検証境界](./docs/PDF_IO.md)
 
 ## 既知の制限
 
@@ -152,6 +163,6 @@ PRでは`.github/workflows/ci.yml`がテストと本番ビルドを検証しま�
 
 ## ライセンス
 
-アプリ本体のライセンスは現時点で未指定です。再利用条件を公開するときに、リポジトリ方針として明示してください。主要な実行時依存はReact、Fabric.js、ONNX Runtime WebがMIT License、LucideがISC Licenseです。明示同意後に取得するU2NetPモデルはApache-2.0です。
+アプリ本体のライセンスは現時点で未指定です。再利用条件を公開するときに、リポジトリ方針として明示してください。主要な実行時依存はReact、Fabric.js、ONNX Runtime WebがMIT License、LucideがISC License、PDF.jsがApache-2.0です。PDF.js同梱のフォント・CMap・WASM等の通知も配布物に保持します。明示同意後に取得するU2NetPモデルはApache-2.0です。
 
 同梱フォントは[Inter](https://github.com/rsms/inter)、[Space Grotesk](https://github.com/floriankarsten/space-grotesk)、[Bitter](https://github.com/solmatas/Bitter)、[Manrope](https://github.com/sharanda/manrope)、Noto Sans JP、Noto Serif JPで、いずれもSIL Open Font License 1.1です。variable版を同梱して自己ホストし、日本語fontはunicode-range単位で遅延読み込みするため、フォント配信元へ接続しません。詳細は[ライセンス一覧](./docs/LICENSES.md)を参照してください。

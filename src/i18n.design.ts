@@ -156,6 +156,18 @@ export interface DesignStudioCopy {
     progress: string
     cropMarks: string
     estimatedSize: string
+    compression: string
+    lossless: string
+    jpeg: string
+    jpegQuality: string
+    rasterNotice: string
+    pdfPreservationNotice: string
+    preflight: string
+    outputPages: string
+    mixedSizes: string
+    resolutionNotice: string
+    rawSize: string
+    pdfLimitNotice: string
   }
   status: {
     loading: string
@@ -344,7 +356,7 @@ const JA: DesignStudioCopy = {
     selectedPages: '書き出すページ',
     dpi: 'DPI',
     bleed: '塗り足し',
-    pdf: 'PDF',
+    pdf: 'PDF（画像として出力）',
     gif: 'GIF',
     video: '動画',
     png: 'PNG（ZIP）',
@@ -353,6 +365,23 @@ const JA: DesignStudioCopy = {
     progress: '書き出し中',
     cropMarks: 'トンボを付ける',
     estimatedSize: '推定ファイルサイズ',
+    compression: '画像の圧縮',
+    lossless: '可逆圧縮（線画・文字）',
+    jpeg: 'JPEG（写真向け）',
+    jpegQuality: 'JPEG画質（10～100）',
+    rasterNotice:
+      '全ページを画像として出力します。文字検索・ベクターは保持されず、透明部分は白に合成されます。',
+    pdfPreservationNotice:
+      '元PDFのリンク、しおり、タグ、フォーム、添付ファイル、電子署名の有効性は引き継ぎません。',
+    preflight: 'PDF書き出し前の確認',
+    outputPages: '出力ページ数',
+    mixedSizes:
+      '異なる用紙寸法が含まれます。それぞれの寸法を保って出力します。',
+    resolutionNotice:
+      '出力DPIが背景PDFの読込DPIより高いページがあります。元の細部は復元されません。高解像度が必要なら原PDFを取り込み直してください。対象ページ',
+    rawSize: '圧縮前の画像データ量（実際のPDFサイズは内容によって変わります）',
+    pdfLimitNotice:
+      '設定を確認してください。1～100ページ、72～600 DPI、塗り足し0～20 mm、1辺8,192 px、合計64 MPまでです。ページ数やDPIを下げると出力できます。圧縮後の画像データは128 MiBまでです。',
   },
   status: {
     loading: '読み込んでいます…',
@@ -541,7 +570,7 @@ const EN: DesignStudioCopy = {
     selectedPages: 'Pages to export',
     dpi: 'DPI',
     bleed: 'Bleed',
-    pdf: 'PDF',
+    pdf: 'PDF (raster images)',
     gif: 'GIF',
     video: 'Video',
     png: 'PNG (ZIP)',
@@ -550,6 +579,23 @@ const EN: DesignStudioCopy = {
     progress: 'Exporting',
     cropMarks: 'Add crop marks',
     estimatedSize: 'Estimated file size',
+    compression: 'Image compression',
+    lossless: 'Lossless (lines and text)',
+    jpeg: 'JPEG (photos)',
+    jpegQuality: 'JPEG quality (10–100)',
+    rasterNotice:
+      'Every page is exported as an image. Searchable text and vectors are not retained; transparency is composited over white.',
+    pdfPreservationNotice:
+      'Original PDF links, bookmarks, tags, forms, attachments, and electronic signature validity are not retained.',
+    preflight: 'PDF export checks',
+    outputPages: 'Output pages',
+    mixedSizes:
+      'This selection contains different paper sizes. Each page keeps its own dimensions.',
+    resolutionNotice:
+      'Output DPI exceeds the imported PDF background resolution. Upscaling cannot recover lost detail; import the original PDF again at a higher DPI if needed. Pages',
+    rawSize: 'Uncompressed image data (actual PDF size depends on content)',
+    pdfLimitNotice:
+      'Check the settings: 1–100 pages, 72–600 DPI, 0–20 mm bleed, 8,192 px per edge and 64 MP in total. Reduce the page count or DPI. Encoded image data is limited to 128 MiB.',
   },
   status: {
     loading: 'Loading…',

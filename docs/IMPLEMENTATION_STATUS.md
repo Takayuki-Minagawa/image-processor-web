@@ -1,6 +1,6 @@
 # Pixelweave Studio 実装状況
 
-更新日: 2026-10-14
+更新日: 2026-10-28
 
 Pixelweaveは、local-first画像編集MVPと機能拡張P1〜P7を維持したまま、C0〜C9に対応するデザイン制作基盤を追加した。実装状況と残課題は本書、設計判断はADR、調査・検証記録は各PRに集約している。
 
@@ -8,7 +8,7 @@ Pixelweaveは、local-first画像編集MVPと機能拡張P1〜P7を維持した�
 
 ## 現在利用できるデザインフロー
 
-1. 用途別presetまたはcustom寸法からデザインを作る。
+1. 用途別presetまたはcustom寸法からデザインを作る。PDFの選択ページを原寸の背景画像として開くこともできる。
 2. pageを追加・複製・削除・並べ替え、pageごとに背景とdurationを設定する。
 3. 図形、icon、frame、grid、text、template、chart、tableを通常レイヤーとして挿入する。
 4. group、clip frame、selection由来のlayer mask、magic resizeを編集transactionとして適用する。
@@ -52,6 +52,15 @@ PR #4のレビューで確認された保存・並行処理・実ブラウザ差
 
 C0は**部分的な責務分割を追加済み**と再評価する。文書状態・自動保存全体のstore / hooks化、engine全体の分割、TSまで含めた翻訳検査、未接続の動画能力判定は[Issue #5](https://github.com/Takayuki-Minagawa/image-processor-web/issues/5)に残る。今回の書き出しUIに残っていた直書き文言は日英辞書へ移し、TSX baselineを削減した。
 
+## PDF入出力のP0追加
+
+- PDF.jsの公開Display APIで、PDF選択・drop、サムネイル、範囲指定、原寸のロック済み背景取込を接続した。新規文書は未保存確認後に履歴を初期化し、ページ追加は既存の文書transaction・Undo / Redoを使う。取消・失敗時に編集中の文書を保持する。
+- `physicalSize`と任意の`editorState.pdfImport`を保存し、schema v4を維持する。v1〜v4の読込、未知versionの拒否、保存・復元・autosaveを既存validatorで扱い、原PDF bytesと元ファイル名は永続化しない。
+- 既存raster PDFへ可逆Flate圧縮とJPEG品質選択を追加した。既定は可逆圧縮で、透明部分は白へ合成する。P1候補のうち、mm寸法・ページ数・DPI・画像化の制約・取込DPI超過を確認する軽量preflightを併設した。
+- 入力50 MiB、原文書1,000ページ、1回20ページ、1ページ32 MP・選択合計64 MPの上限を設ける。パスワード要求PDFとXFAは明示エラーにする。SVG原寸新規作成、設定保存、比較、ベクターPDF試作・PDF要素分解は次段階とする。
+
+実装判断・上限・ライセンス・試験境界は[PDF入出力仕様](./PDF_IO.md)を参照。ローカルでformat・lint・TypeScript・Vitest 881件・本番build・PagesパスE2E 68件が成功した（macOS 26.6.2 / Chromium 151.0.7922.34）。PDF専用3ケースには全画素一致の可逆往復と初回ロード後の通信遮断試験を含む。Safari / PreviewとM4 Max実機の性能は未検証である。
+
 | Phase                | 実装済み                                                                                                                                                                                                                                                                                                                                                                                                            | 現在の境界・残作業                                                                                                                                                                                      | 状態           |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
 | C0 基盤              | `App.tsx`をlazy shellへ縮小し、editor runtime、Design Studio、content pack、media処理を別chunk化。design copyをnamespace化し、hardcoded日本語検査を`npm run lint`へ統合。content-addressed `CompactHistory`と4K×20 layer×100操作benchmarkを追加                                                                                                                                                                     | 画面stateの多くは大きな`EditorApplication.tsx`に残り、store / reducerへの集約と`fabricEngine.ts`の責務分割は未完了。[Issue #5](https://github.com/Takayuki-Minagawa/image-processor-web/issues/5)で追跡 | 主要基盤対応   |
@@ -61,7 +70,7 @@ C0は**部分的な責務分割を追加済み**と再評価する。文書状�
 | C4 text / font       | Latin 4 family、日本語Noto 2 family、system fontを共通registry化。Notoをunicode-rangeで遅延loadしinstall shellから除外。license確認付きuser fontをOPFSへ保存し`FontFace`で読み込み、一覧・適用・削除UIを接続。対応browserではLocal Font Accessも選択可能。欠落family warning、3 layout mode、簡易縦書き、箇条書き・番号list、4 effectを実装                                                                         | text objectごとの明示的なuser font source IDと見出しstyle presetは未接続。縦書きは禁則・縦中横を含む完全な日本語組版ではない                                                                            | 主要フロー対応 |
 | C5 template / brand  | 6 deferred pack・計36 templateを全件検索表示し、複数pageを通常layerへ展開。適用全体をdocument checkpoint 1回でUndo可能。検証付き`.pwxtemplate.json`の完全project import / export、OPFS優先brand kit保存・選択・削除、templateへの色・font適用を実装                                                                                                                                                                 | user templateはfile import / exportで、端末内template libraryは持たない。brand logo参照の編集UIと新規作成dialog内のtemplate browserは未接続                                                             | 主要フロー対応 |
 | C6 table / chart     | bounded CSV / TSV parser、immutable table model、bar / horizontal bar / line / pie / doughnut chart model、renderer非依存vector layoutを実装。semantic modelをFabric custom propertyへ保存し、CSV mini table、行列追加・削除、cell背景、罫線、行高・列幅、chart種別・data・paletteを再編集して安全なSVGへ再描画する。Undo / Redo、保存・再読込、SVG出力を検証                                                       | cell結合、複合chart、散布図、cell内rich textは初期対象外                                                                                                                                                | 主要フロー対応 |
-| C7 export            | active / selected / all pageのPNG ZIP、PDF 1.7 raster writer、pageごとのMedia / Bleed / Trim box、任意crop mark、GIF89a、RGB332 raster、4096語LZW、概算file size、進捗・cancelを実装。mm pageは物理仕上がり寸法を保持し、DPIはraster密度だけを変更する。異なる寸法のpageも1 PDF内で独立geometryを保持し、PDF / GIFは共通Worker client経由でencode                                                                   | PDFはraster RGB/JPEGで、bleed領域は白。Preview / Acrobat /主要browserでの手動互換確認はchecklistに従ってreleaseごとに記録                                                                               | 主要フロー対応 |
+| C7 export            | active / selected / all pageのPNG ZIP、PDF 1.7 raster writer、pageごとのMedia / Bleed / Trim box、任意crop mark、GIF89a、RGB332 raster、4096語LZW、概算file size、進捗・cancelを実装。mm pageは物理仕上がり寸法を保持し、DPIはraster密度だけを変更する。異なる寸法のpageも1 PDF内で独立geometryを保持し、PDF / GIFは共通Worker client経由でencode                                                                   | PDFはraster Flate/JPEGで、bleed領域は白。Preview / Acrobat /主要browserでの手動互換確認はchecklistに従ってreleaseごとに記録                                                                             | 主要フロー対応 |
 | C8 animation / video | schema v4 timeline、enter / emphasis / exit、9 effect、4 easing、page transition、relative start、純粋evaluatorを実装。preview / GIF / video frameは同じpresentation timelineとpage-local時刻を使用。native `MediaRecorder`のMP4 / WebMとGIF fallbackを接続                                                                                                                                                         | native container・codec対応はbrowser依存。決定論的なWebCodecs encoder / muxer、audio、high-frame-rate exportは未実装。GIF / videoは最大480px・最大120 frameのbounded preview品質                        | 主要フロー対応 |
 | C9 mobile            | handset / tabletでbottom tool rail、inspector bottom sheet、fullscreen modal、44px targetをapp shellへ統合。two-pointer pinch / panとlong pressをFabric viewportへ配線。390px phone / 1024px tabletのPlaywrightとaxe scenarioを追加                                                                                                                                                                                 | iPhone / iPad実機、Safari touch、VoiceOverでの確認は未記録                                                                                                                                              | 主要フロー対応 |
 
@@ -100,7 +109,7 @@ C0は**部分的な責務分割を追加済み**と再評価する。文書状�
 
 timeline evaluatorはrendererとwall clockから独立し、任意時刻のpage / element stateを決定論的に返す。transition overlap時もactive pageは最大2枚となる。preview、GIF、videoは同じpresentation timelineでpage transitionを評価し、同じpage-local時刻をFabricの要素animation評価へ渡す。
 
-PDFは1 page 1 raster XObjectのPDF 1.7で、物理boxと任意crop markを保持する。GIFはfull-canvas indexed GIF89aで、UIはRGB332固定palette、最長辺480px、最大120 frameに制限する。videoはCanvas streamをbrowserの`MediaRecorder`へ渡し、native MP4 / WebM containerが利用できなければ同じframe列をGIFへfallbackする。WebCodecsのcodec / muxer capability modelは将来の決定論的pipeline用であり、現在のvideo記録とは別境界である。
+PDFは1 page 1 raster XObjectのPDF 1.7で、物理boxと任意crop markを保持する。画像の既定圧縮は可逆Flateで、JPEGを選ぶ場合は品質を指定する。出力前の寸法・ページ数・DPI確認と64 MP総画素／128 MiB圧縮画像データの上限を持つ。GIFはfull-canvas indexed GIF89aで、UIはRGB332固定palette、最長辺480px、最大120 frameに制限する。videoはCanvas streamをbrowserの`MediaRecorder`へ渡し、native MP4 / WebM containerが利用できなければ同じframe列をGIFへfallbackする。WebCodecsのcodec / muxer capability modelは将来の決定論的pipeline用であり、現在のvideo記録とは別境界である。
 
 release前のviewer / browser確認は[PDF / GIF / video書き出し互換確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)を使う。
 
@@ -122,7 +131,7 @@ selection maskは[ADR-006](./adr/0006-selection-mask.md)、背景modelとscript�
 
 ## local-firstと安全境界
 
-- 画像、project、素材、font、template、brand kit、macro、scriptを既定で外部送信しない
+- 画像、PDF原本、project、素材、font、template、brand kit、macro、scriptを既定で外部送信しない
 - SVGは組み込み・user経路ともscript、event属性、埋め込みHTML、危険CSS、外部resourceを除去または拒否する
 - user font bytesと未検証のuser asset原本をtemplate / brand kitへ埋め込まない。designへ挿入済み画像のFabric payloadはproject上限で検証する
 - 背景modelは固定descriptor、表示された取得size、明示同意、SHA-256検証なしにdownloadしない
@@ -141,11 +150,11 @@ selection maskは[ADR-006](./adr/0006-selection-mask.md)、背景modelとscript�
 - OPFS / localStorage fallback付きuser asset / font repository、font registry、Noto deferred loader、license確認と`FontFace`
 - brand kit repository、user template envelope、CSV / TSV、table / chart modelとSVG
 - timeline schedule / evaluator、project timeline adapter
-- PDF box / xref / JPEG / crop mark、GIF palette / timing / LZW、Worker client cancel / progress、MediaRecorder選択
+- PDFのCropBox / 回転 / UserUnit、選択上限、取消、取込metadata、PDF box / xref / Flate / JPEG / crop mark、GIF palette / timing / LZW、Worker client cancel / progress、MediaRecorder選択
 - responsive layout、pinch / pan、long press、phone / tablet Playwright、axe
 - history benchmarkと、asset / template / mediaの独立chunkを検査するbundle budget
 
-最終PRでは次をquality gateとして実行し、結果をPR本文へ記録する。
+最終PRでは次をローカルのquality gateとして実行し、結果をPR本文へ記録する。GitHub ActionsのCIは手動実行用とし、PRでは自動実行しない。Pages workflowはmainへのpush後にbuildとdeployのみを行うため、マージ前にローカル検証とレビューを完了する。
 
 ```sh
 npm run format:check

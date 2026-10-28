@@ -1059,7 +1059,13 @@ test.describe('Feature expansion studio', () => {
     const levels = filterPanel.locator('[data-filter-id="levels"]')
     await levels.scrollIntoViewIfNeeded()
 
-    await expect(levels).toHaveScreenshot('advanced-levels-filter.png', {
+    // macOS uses Hiragino/system font metrics. Its reference was captured from
+    // unchanged main b32ba2b; keep the existing reference for other platforms.
+    const snapshotName =
+      process.platform === 'darwin'
+        ? 'advanced-levels-filter-macos.png'
+        : 'advanced-levels-filter.png'
+    await expect(levels).toHaveScreenshot(snapshotName, {
       animations: 'disabled',
       maxDiffPixelRatio: 0.05,
       threshold: 0.25,

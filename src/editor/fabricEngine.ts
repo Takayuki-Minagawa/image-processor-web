@@ -545,6 +545,7 @@ const normalizeEditorState = (
     guides,
     snapTolerance,
     ...(selectionMask ? { selectionMask } : {}),
+    ...(state?.pdfImport ? { pdfImport: { ...state.pdfImport } } : {}),
   }
 }
 
@@ -4628,6 +4629,7 @@ export class FabricEditorEngine {
       originY: 'top',
       absolutePositioned: true,
       fill: '#000000',
+      strokeWidth: 0,
       selectable: false,
       evented: false,
       excludeFromExport: true,

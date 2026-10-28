@@ -515,7 +515,7 @@ test.describe('Canva parity design workflow', () => {
       editorState: { guides: [], snapTolerance: 8 },
     }))
     await page
-      .locator('input[type="file"][accept=".pwx.json,.json,application/json"]')
+      .locator('input[type="file"][accept*=".pwx.json"]')
       .setInputFiles({
         name: 'ten-4k-pages.pwx.json',
         mimeType: 'application/json',

@@ -396,7 +396,7 @@ test.describe('Pixelweave editor', () => {
     }))
 
     await page
-      .locator('input[type="file"][accept=".pwx.json,.json,application/json"]')
+      .locator('input[type="file"][accept*=".pwx.json"]')
       .setInputFiles({
         name: 'layer-limit.pwx.json',
         mimeType: 'application/json',
@@ -485,9 +485,7 @@ test.describe('Pixelweave editor', () => {
   })
 
   test('不正なプロジェクトのエラーを日本語で表示する', async ({ page }) => {
-    const projectInput = page.locator(
-      'input[type="file"][accept=".pwx.json,.json,application/json"]',
-    )
+    const projectInput = page.locator('input[type="file"][accept*=".pwx.json"]')
     await projectInput.setInputFiles({
       name: 'broken.pwx.json',
       mimeType: 'application/json',
@@ -677,7 +675,7 @@ test.describe('Pixelweave editor', () => {
 
     await createCanvas(page, '空', 200, 100)
     await page
-      .locator('input[type="file"][accept=".pwx.json,.json,application/json"]')
+      .locator('input[type="file"][accept*=".pwx.json"]')
       .setInputFiles(downloadedPath!)
 
     await expect(page.getByLabel('プロジェクト名')).toHaveValue('往復確認')

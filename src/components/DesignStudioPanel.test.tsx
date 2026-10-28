@@ -250,6 +250,70 @@ describe('DesignStudioPanel', () => {
     expect(onCancelExport).toHaveBeenCalledOnce()
   })
 
+  it('explains raster PDF output and passes lossless or JPEG quality explicitly', async () => {
+    const user = userEvent.setup()
+    const onExport = vi.fn()
+    render(<DesignStudioPanel {...props({ onExport })} />)
+    await user.click(screen.getByRole('button', { name: 'Export' }))
+    expect(screen.getByText(/Every page is exported as an image/)).toBeVisible()
+    expect(screen.getByText(/electronic signature validity/)).toBeVisible()
+    const exportButton = screen
+      .getAllByRole('button', { name: 'Export' })
+      .at(-1)!
+    await user.click(exportButton)
+    expect(onExport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pdfCompression: 'lossless', dpi: 300 }),
+    )
+    await user.selectOptions(screen.getByLabelText('Image compression'), 'jpeg')
+    fireEvent.change(screen.getByLabelText('JPEG quality (10–100)'), {
+      target: { value: '80' },
+    })
+    await user.click(exportButton)
+    expect(onExport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pdfCompression: 'jpeg', jpegQuality: 0.8 }),
+    )
+    fireEvent.change(screen.getByLabelText('JPEG quality (10–100)'), {
+      target: { value: '0' },
+    })
+    expect(exportButton).toBeDisabled()
+  })
+
+  it('shows physical page dimensions and resolution warnings before export', async () => {
+    const user = userEvent.setup()
+    render(
+      <DesignStudioPanel
+        {...props({
+          pages: [
+            {
+              id: 'page-1',
+              name: 'Imported page',
+              width: 1240,
+              height: 1754,
+              durationMs: 3000,
+              physicalSize: {
+                unit: 'mm',
+                widthMm: 210,
+                heightMm: 297,
+                sourceDpi: 150,
+              },
+              pdfImportDpi: 150,
+            },
+          ],
+        })}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Export' }))
+    expect(screen.getByText(/210.00 × 297.00 mm/)).toBeVisible()
+    expect(
+      screen.getByText(/Upscaling cannot recover lost detail/),
+    ).toBeVisible()
+    fireEvent.change(screen.getByLabelText('DPI'), { target: { value: '601' } })
+    expect(screen.getByRole('alert')).toHaveTextContent(/64 MP/)
+    expect(
+      screen.getAllByRole('button', { name: 'Export' }).at(-1),
+    ).toBeDisabled()
+  })
+
   it('keeps animations on unselected layers when applying motion', async () => {
     const user = userEvent.setup()
     const onTimeline = vi.fn()

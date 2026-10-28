@@ -458,6 +458,28 @@ describe('BrowserAutosaveRepository', () => {
     await expect(repository.load()).resolves.toEqual(migrated)
   })
 
+  it('retains optional PDF provenance in page-delta autosaves', async () => {
+    const original = project()
+    original.pages[0].editorState.pdfImport = {
+      kind: 'rasterized-pdf',
+      pageNumber: 2,
+      widthMm: 210,
+      heightMm: 297,
+      rotation: 90,
+      dpi: 150,
+    }
+    const opfs = makeOpfs()
+    const repository = new BrowserAutosaveRepository({
+      getOpfsRoot: async () => opfs.root,
+      storage: new MemoryStorage(),
+    })
+    await repository.save(original)
+    const restored = await repository.load()
+    expect(restored?.pages[0].editorState.pdfImport).toEqual(
+      original.pages[0].editorState.pdfImport,
+    )
+  })
+
   it('reports a clear error when no persistence backend can save', async () => {
     const repository = new BrowserAutosaveRepository({
       getOpfsRoot: null,

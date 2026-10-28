@@ -945,6 +945,31 @@ describe('FabricEditorEngine layer lookup', () => {
 })
 
 describe('FabricEditorEngine feature expansion', () => {
+  it('preserves PDF provenance across restore, edits, and history snapshots', async () => {
+    const engine = createEngine()
+    const pdfImport = {
+      kind: 'rasterized-pdf' as const,
+      pageNumber: 4,
+      widthMm: 210,
+      heightMm: 297,
+      rotation: 270 as const,
+      dpi: 300,
+    }
+    const original = engine.snapshot()
+    original.editorState = { ...original.editorState!, pdfImport }
+    await engine.restore(original)
+    engine.addRect({ name: 'Annotation' })
+    const edited = engine.snapshot()
+    expect(edited.editorState?.pdfImport).toEqual(pdfImport)
+    await engine.restore(original)
+    expect(engine.getLayers()).toHaveLength(0)
+    expect(engine.getEditorState().pdfImport).toEqual(pdfImport)
+    await engine.restore(edited)
+    expect(engine.getLayers()).toHaveLength(1)
+    expect(engine.getEditorState().pdfImport).toEqual(pdfImport)
+    expect(engine.getEditorState().pdfImport).not.toBe(pdfImport)
+  })
+
   it('applies an extracted palette color to only the requested paint target', () => {
     const engine = createEngine()
     engine.addRect({
