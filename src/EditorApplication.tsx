@@ -20,6 +20,8 @@ import SelectedTextEditor from './components/SelectedTextEditor'
 import { inspectorCopy } from './i18n.inspector'
 import { pdfCopy, pdfExportErrorMessage } from './i18n.pdf'
 import { svgCopy } from './i18n.svg'
+import { comparisonCopy } from './i18n.comparison'
+import type { ComparisonCapture } from './comparison/pdfComparison'
 import type { SvgNativeGeometry } from './import/svgGeometry'
 import type { SvgImportTarget } from './components/SvgImportDialog'
 import { createEditorProjectMetadata } from './editor/projectMetadata'
@@ -191,6 +193,9 @@ const PreferenceControls = lazy(() => import('./components/PreferenceControls'))
 const DesignStudioPanel = lazy(() => import('./components/DesignStudioPanel'))
 const PdfImportDialog = lazy(() => import('./components/PdfImportDialog'))
 const SvgImportDialog = lazy(() => import('./components/SvgImportDialog'))
+const PdfComparisonDialog = lazy(
+  () => import('./components/PdfComparisonDialog'),
+)
 const PresentationPreview = lazy(
   () => import('./components/PresentationPreview'),
 )
@@ -206,6 +211,7 @@ type DialogName =
   | 'pdf'
   | 'svg'
   | 'pdf-export'
+  | 'pdf-comparison'
   | null
 type StudioTab = 'design' | 'logo' | 'automation' | 'advanced'
 
@@ -3914,6 +3920,46 @@ export default function EditorApplication() {
     [refreshEditorState, runEditorOperation],
   )
 
+  const captureComparisonPage = useCallback(
+    async (signal: AbortSignal): Promise<ComparisonCapture> => {
+      await waitForEditorOperations()
+      signal.throwIfAborted()
+      const engine = engineRef.current
+      const pageId = activeDesignPageIdRef.current
+      const page = designPagesRef.current.find(({ id }) => id === pageId)
+      if (
+        !engine ||
+        !page ||
+        busyRef.current ||
+        designDocumentOperationRef.current
+      )
+        throw new Error('The current page is not ready for comparison.')
+      const revision = revisionRef.current
+      const size = engine.getDocumentSize()
+      const sourcePageNumber = (latestSnapshotRef.current ?? page.snapshot)
+        .editorState?.pdfImport?.pageNumber
+      const preview = await engine.renderPreview(1600, signal)
+      signal.throwIfAborted()
+      if (
+        engine !== engineRef.current ||
+        pageId !== activeDesignPageIdRef.current ||
+        revision !== revisionRef.current
+      )
+        throw new Error('The current page changed while preparing comparison.')
+      return {
+        ...preview,
+        documentWidth: size.width,
+        documentHeight: size.height,
+        name: page.name,
+        ...(page.physicalSize
+          ? { physicalSize: { ...page.physicalSize } }
+          : {}),
+        ...(sourcePageNumber ? { sourcePageNumber } : {}),
+      }
+    },
+    [waitForEditorOperations],
+  )
+
   const renderDesignPage = useCallback(
     async (
       page: DesignPageState,
@@ -4316,7 +4362,13 @@ export default function EditorApplication() {
     event.preventDefault()
     dragDepthRef.current = 0
     setDragActive(false)
-    if (busyRef.current || pdfFile || svgFile) return
+    if (
+      busyRef.current ||
+      pdfFile ||
+      svgFile ||
+      activeDialog === 'pdf-comparison'
+    )
+      return
     const engine = engineRef.current
     const dropTarget = engine?.getCanvasDropTarget(event.nativeEvent)
     // The drag data store becomes protected as soon as this event dispatch
@@ -4639,7 +4691,13 @@ export default function EditorApplication() {
       aria-busy={busy}
       onDragEnter={(event) => {
         event.preventDefault()
-        if (busyRef.current || pdfFile || svgFile) return
+        if (
+          busyRef.current ||
+          pdfFile ||
+          svgFile ||
+          activeDialog === 'pdf-comparison'
+        )
+          return
         dragDepthRef.current += 1
         setDragActive(true)
       }}
@@ -6131,6 +6189,13 @@ export default function EditorApplication() {
             <button
               className="secondary-button full-width"
               type="button"
+              onClick={() => setActiveDialog('pdf-comparison')}
+            >
+              {comparisonCopy(locale).open}
+            </button>
+            <button
+              className="secondary-button full-width"
+              type="button"
               onClick={() => setActiveDialog('studio')}
             >
               <Sparkles aria-hidden="true" />
@@ -6307,6 +6372,26 @@ export default function EditorApplication() {
         </Modal>
       ) : null}
 
+      {activeDialog === 'pdf-comparison' ? (
+        <Modal
+          title={comparisonCopy(locale).title}
+          description={comparisonCopy(locale).description}
+          closeLabel={ui.close}
+          onClose={() => setActiveDialog(null)}
+          wide
+        >
+          <Suspense
+            fallback={<p role="status">{comparisonCopy(locale).loading}</p>}
+          >
+            <PdfComparisonDialog
+              locale={locale}
+              captureCurrentPage={captureComparisonPage}
+              onClose={() => setActiveDialog(null)}
+            />
+          </Suspense>
+        </Modal>
+      ) : null}
+
       {activeDialog === 'export' ? (
         <Modal
           title={ui.exportTitle}
@@ -6323,6 +6408,13 @@ export default function EditorApplication() {
             }}
           >
             {pdfCopy(locale).exportSettings}
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => setActiveDialog('pdf-comparison')}
+          >
+            {comparisonCopy(locale).open}
           </button>
           <ExportImageForm
             locale={locale}
