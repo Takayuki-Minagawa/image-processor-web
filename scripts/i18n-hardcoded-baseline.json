@@ -2,8 +2,8 @@
   "version": 1,
   "files": {
     "src/EditorApplication.tsx": {
-      "count": 248,
-      "sha256": "9ebd1358cf8bb31394711756bdca2d343c2148542393f4d692e27fe0ec53c14b"
+      "count": 246,
+      "sha256": "ba4dd47dcfbcd8ef2a5a8d539379ffe101268d56b8b84d1121bbaee16f059bd4"
     },
     "src/components/ErrorBoundary.tsx": {
       "count": 4,

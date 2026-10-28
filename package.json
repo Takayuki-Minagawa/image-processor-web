@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "type": "module",
   "scripts": {
@@ -30,6 +30,7 @@
     "fabric": "^7.4.0",
     "lucide-react": "^1.28.0",
     "onnxruntime-web": "^1.27.0",
+    "pdfjs-dist": "6.4.299",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

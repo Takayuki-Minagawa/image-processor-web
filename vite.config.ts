@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
-import { readdir, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
 import { posix, resolve } from 'node:path'
 
 const repositoryName =
@@ -11,6 +13,12 @@ const isDeferredOnnxRuntimeAsset = (file: string): boolean =>
   /(?:^|\/)ort(?:[.-]).*\.(?:js|wasm)$/u.test(file)
 const isDeferredJapaneseFontAsset = (file: string): boolean =>
   /(?:^|\/)noto-(?:sans|serif)-jp.*\.woff2$/u.test(file)
+const require = createRequire(import.meta.url)
+const pdfPackageRoot = dirname(require.resolve('pdfjs-dist/package.json'))
+const pdfVersion = (require('pdfjs-dist/package.json') as { version: string })
+  .version
+const pdfAssetPath = `pdfjs/${pdfVersion}`
+const pdfAssetDirectories = ['cmaps', 'standard_fonts', 'wasm', 'iccs']
 
 const listFiles = async (
   directory: string,
@@ -33,6 +41,66 @@ export default defineConfig({
   base: isGitHubPages ? `/${repositoryName}/` : '/',
   plugins: [
     react(),
+    {
+      name: 'local-pdf-assets',
+      async configureServer(server) {
+        // Serve only package-owned resources, never paths supplied by a PDF.
+        const allowedFiles = new Set([
+          'LICENSE',
+          ...(
+            await Promise.all(
+              pdfAssetDirectories.map(async (directory) =>
+                (await listFiles(resolve(pdfPackageRoot, directory))).map(
+                  (file) => `${directory}/${file}`,
+                ),
+              ),
+            )
+          ).flat(),
+        ])
+        server.middlewares.use(
+          `/${pdfAssetPath}/`,
+          async (request, response, next) => {
+            const relativePath = request.url?.split('?')[0]?.replace(/^\//u, '')
+            if (!relativePath || !allowedFiles.has(relativePath)) {
+              next()
+              return
+            }
+            try {
+              const content = await readFile(
+                resolve(pdfPackageRoot, relativePath),
+              )
+              response.setHeader(
+                'Content-Type',
+                relativePath.endsWith('.wasm')
+                  ? 'application/wasm'
+                  : relativePath.endsWith('.js')
+                    ? 'text/javascript'
+                    : 'application/octet-stream',
+              )
+              response.end(content)
+            } catch (error) {
+              next(error)
+            }
+          },
+        )
+      },
+      async writeBundle() {
+        const destination = resolve(process.cwd(), 'dist', pdfAssetPath)
+        await mkdir(destination, { recursive: true })
+        // Keep all bundled licenses beside the original CMaps, fonts and WASM.
+        await Promise.all(
+          ['LICENSE', ...pdfAssetDirectories].map((directory) =>
+            cp(
+              resolve(pdfPackageRoot, directory),
+              resolve(destination, directory),
+              {
+                recursive: true,
+              },
+            ),
+          ),
+        )
+      },
+    },
     {
       name: 'stamp-service-worker',
       apply: 'build',

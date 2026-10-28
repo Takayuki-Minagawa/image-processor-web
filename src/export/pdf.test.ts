@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { deflateSync, inflateSync } from 'node:zlib'
 import {
   buildRasterPdf,
   calculateRasterPdfGeometry,
@@ -166,6 +167,21 @@ describe('raster PDF byte writer', () => {
     expect(new TextDecoder('latin1').decode(bytes)).toContain(
       '/Filter /DCTDecode',
     )
+  })
+
+  it('embeds lossless RGB samples with a byte-exact FlateDecode stream', async () => {
+    const rgb = new Uint8Array([0, 127, 255, 12, 34, 56])
+    const compressed = new Uint8Array(deflateSync(rgb))
+    const bytes = await buildRasterPdf(
+      [{ width: 2, height: 1, encoding: 'flate', data: compressed }],
+      geometry,
+    )
+    const text = new TextDecoder('latin1').decode(bytes)
+    expect(text).toContain('/Filter /FlateDecode')
+    const start = text.indexOf('stream\n') + 'stream\n'.length
+    expect([
+      ...inflateSync(bytes.slice(start, start + compressed.length)),
+    ]).toEqual([...rgb])
   })
 
   it('writes independent boxes and raster dimensions for mixed page sizes', async () => {

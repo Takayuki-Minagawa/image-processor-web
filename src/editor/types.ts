@@ -47,6 +47,16 @@ export interface EncodedSelectionMask {
 
 export type EncodedLayerMask = EncodedSelectionMask
 
+/** Original visible PDF page geometry, without source bytes or file names. */
+export interface ProjectPdfImportMetadata extends JsonObject {
+  kind: 'rasterized-pdf'
+  pageNumber: number
+  widthMm: number
+  heightMm: number
+  rotation: 0 | 90 | 180 | 270
+  dpi: number
+}
+
 /**
  * Renderer-independent per-canvas editing state introduced in schema v2.
  *
@@ -58,6 +68,8 @@ export interface ProjectEditorState {
   guides: ProjectGuide[]
   snapTolerance: number
   selectionMask?: EncodedSelectionMask
+  /** Optional schema-v4 metadata; records the source before later edits. */
+  pdfImport?: ProjectPdfImportMetadata
   [key: string]: JsonValue | ProjectGuide[] | EncodedSelectionMask | undefined
 }
 

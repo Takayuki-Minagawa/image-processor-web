@@ -1,0 +1,39 @@
+.pdf-import-form fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.pdf-import-form label {
+  display: grid;
+  gap: 6px;
+}
+.pdf-preview {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  padding: 12px;
+  background: var(--surface-deep, #161923);
+  border-radius: 12px;
+}
+.pdf-preview img {
+  max-height: 220px;
+  max-width: 100%;
+  object-fit: contain;
+  background: white;
+}
+.pdf-page-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pdf-page-controls input {
+  width: 70px;
+  max-width: 70px;
+  flex: 0 0 70px;
+}
+.pdf-estimate {
+  font-variant-numeric: tabular-nums;
+}

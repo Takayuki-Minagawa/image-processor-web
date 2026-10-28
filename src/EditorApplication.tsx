@@ -18,6 +18,9 @@ import NumericInput from './components/NumericInput'
 import AdjustmentControl from './components/AdjustmentControl'
 import SelectedTextEditor from './components/SelectedTextEditor'
 import { inspectorCopy } from './i18n.inspector'
+import { pdfCopy, pdfExportErrorMessage } from './i18n.pdf'
+import type { PdfRasterPage } from './import/pdf'
+import type { PdfImportTarget } from './components/PdfImportDialog'
 import { LabeledHistory, type HistoryLabel } from './editor/labeledHistory'
 import {
   ArrowDown,
@@ -182,13 +185,22 @@ const AdvancedStudioPanel = lazy(async () => ({
 const ManualContent = lazy(() => import('./components/ManualContent'))
 const PreferenceControls = lazy(() => import('./components/PreferenceControls'))
 const DesignStudioPanel = lazy(() => import('./components/DesignStudioPanel'))
+const PdfImportDialog = lazy(() => import('./components/PdfImportDialog'))
 const PresentationPreview = lazy(
   () => import('./components/PresentationPreview'),
 )
 
 type InspectorTab = 'layers' | 'adjustments' | 'history'
 type DialogName =
-  'menu' | 'new' | 'export' | 'studio' | 'manual' | 'shortcuts' | null
+  | 'menu'
+  | 'new'
+  | 'export'
+  | 'studio'
+  | 'manual'
+  | 'shortcuts'
+  | 'pdf'
+  | 'pdf-export'
+  | null
 type StudioTab = 'design' | 'logo' | 'automation' | 'advanced'
 
 interface DesignPageState {
@@ -224,6 +236,8 @@ export interface DesignPageSummary {
   timeline?: ProjectPageTimeline
   transition?: ProjectPageTimeline['transition']
   animated: boolean
+  physicalSize?: ProjectPagePhysicalSize
+  pdfImportDpi?: number
 }
 
 interface SaveFileHandleLike {
@@ -752,6 +766,8 @@ export default function EditorApplication() {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [activeDialog, setActiveDialog] = useState<DialogName>(null)
+  const [pdfFile, setPdfFile] = useState<File | null>(null)
+  const pdfCommitRef = useRef(false)
   const [studioTab, setStudioTab] = useState<StudioTab>('design')
   const [projectName, setProjectName] = useState('無題のデザイン')
   const [dirty, setDirty] = useState(false)
@@ -1395,6 +1411,10 @@ export default function EditorApplication() {
         name: page.name,
         width: page.snapshot.width,
         height: page.snapshot.height,
+        ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
+        ...(page.snapshot.editorState?.pdfImport
+          ? { pdfImportDpi: page.snapshot.editorState.pdfImport.dpi }
+          : {}),
         ...(page.thumbnail ? { thumbnail: page.thumbnail } : {}),
         durationMs: page.timeline?.durationMs ?? 3_000,
         ...(page.timeline ? { timeline: page.timeline } : {}),
@@ -2593,10 +2613,135 @@ export default function EditorApplication() {
     ],
   )
 
+  const closePdfImport = () => {
+    if (pdfCommitRef.current) return
+    setPdfFile(null)
+    setActiveDialog(null)
+  }
+
+  const startPdfImport = (file: File) => {
+    if (busyRef.current || pdfCommitRef.current || pdfFile) return
+    setPdfFile(file)
+    setActiveDialog('pdf')
+  }
+
+  const importPdfPages = async (
+    rasters: PdfRasterPage[],
+    target: PdfImportTarget,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const engine = engineRef.current
+    if (!engine) return false
+    const copy = pdfCopy(locale)
+    if (
+      target === 'replace' &&
+      dirtyRef.current &&
+      !window.confirm(copy.confirmReplace)
+    )
+      return false
+    await waitForEditorOperations()
+    signal.throwIfAborted()
+    const { createPdfDesignPage } = await import('./editor/pdfPageAdapter')
+    const prepared: DesignPageState[] = []
+    for (const raster of rasters) {
+      prepared.push(await createPdfDesignPage(raster, { signal }))
+    }
+    signal.throwIfAborted()
+    const current = engine.snapshot()
+    const existing = designPagesRef.current.map((page) =>
+      page.id === activeDesignPageIdRef.current
+        ? { ...page, snapshot: current }
+        : page,
+    )
+    const next = target === 'append' ? [...existing, ...prepared] : prepared
+    if (!prepared.length || next.length > 100)
+      throw new Error(copy.projectLimit)
+    const { createProjectDocument, serializeProject } =
+      await import('./editor/project')
+    const candidate = createProjectDocument({
+      pages: next.map((page) => ({
+        id: page.id,
+        name: page.name,
+        canvasSize: {
+          width: page.snapshot.width,
+          height: page.snapshot.height,
+        },
+        fabricCanvas: asJsonObject(page.snapshot.json),
+        editorState: page.snapshot.editorState ?? {
+          guides: [],
+          snapTolerance: 8,
+        },
+        ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
+        ...(page.background ? { background: page.background } : {}),
+        ...(page.timeline ? { timeline: page.timeline } : {}),
+      })),
+      activePageId: prepared[0].id,
+      metadata: {
+        name: target === 'replace' ? copy.untitled : projectNameRef.current,
+      },
+    })
+    if (new Blob([serializeProject(candidate)]).size > MAX_PROJECT_BYTES)
+      throw new Error(copy.projectLimit)
+    signal.throwIfAborted()
+    // All preparation is complete. From here the atomic commit finishes even
+    // if the dialog receives a late cancellation request.
+    pdfCommitRef.current = true
+    beginBusy()
+    try {
+      flushPendingHistory()
+      synchronizeActiveDesignPage(current)
+      await engine.restore(prepared[0].snapshot)
+      cancelPendingAutosave()
+      autosaveGenerationRef.current += 1
+      designPagesRef.current = next
+      activeDesignPageIdRef.current = prepared[0].id
+      historyRef.current.reset(prepared[0].snapshot)
+      if (target === 'replace') {
+        projectNameRef.current = copy.untitled
+        setProjectName(copy.untitled)
+        createdAtRef.current = new Date().toISOString()
+        sourceNameRef.current = undefined
+        saveHandleRef.current = null
+      }
+      if (target === 'replace') {
+        // A new document starts its own history, just like Open/New. Appending
+        // instead preserves the current document and is one undoable operation.
+        latestSnapshotRef.current = prepared[0].snapshot
+        documentHistoryRef.current.reset(
+          captureDesignDocumentCheckpoint(),
+          copy.history,
+          nowLabel(),
+        )
+        revisionRef.current += 1
+        dirtyRef.current = true
+        setDirty(true)
+        refreshHistoryState()
+        publishDesignPages()
+        scheduleAutosave(prepared[0].snapshot)
+      } else {
+        markDesignDocumentChanged(prepared[0].snapshot, copy.history)
+      }
+      refreshEditorState()
+      fitCanvas()
+      setStatus({ kind: 'success', message: copy.imported })
+      return true
+    } finally {
+      pdfCommitRef.current = false
+      endBusy()
+    }
+  }
+
   const onImageInput = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
+    if (
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf')
+    ) {
+      startPdfImport(file)
+      return
+    }
     if (
       file.type === 'image/svg+xml' ||
       file.name.toLowerCase().endsWith('.svg')
@@ -2724,7 +2869,13 @@ export default function EditorApplication() {
   const onProjectInput = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (file) await openProject(file)
+    if (!file) return
+    if (
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf')
+    )
+      startPdfImport(file)
+    else await openProject(file)
   }
 
   const saveProject = useCallback(async () => {
@@ -3873,27 +4024,26 @@ export default function EditorApplication() {
           })
           await download(zip, 'application/zip', 'zip')
         } else if (request.format === 'pdf') {
-          const [{ resolveRasterPdfPageExport }, raster, mediaWorker] =
-            await Promise.all([
-              import('./export/pdf'),
-              import('./export/browserRaster'),
-              import('./export/mediaExportClient'),
-            ])
-          const pdfPlans = pages.map((page) =>
-            resolveRasterPdfPageExport(
-              {
-                width: page.snapshot.width,
-                height: page.snapshot.height,
-                ...(page.physicalSize
-                  ? { physicalSize: page.physicalSize }
-                  : {}),
-              },
-              request.dpi,
-              request.bleedMm,
-            ),
-          )
+          const [preflight, raster, mediaWorker] = await Promise.all([
+            import('./export/pdfPreflight'),
+            import('./export/browserRaster'),
+            import('./export/mediaExportClient'),
+          ])
+          const pdfPlans = preflight.createPdfExportPreflight(
+            pages.map((page) => ({
+              width: page.snapshot.width,
+              height: page.snapshot.height,
+              ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
+              ...(page.snapshot.editorState?.pdfImport
+                ? { pdfImportDpi: page.snapshot.editorState.pdfImport.dpi }
+                : {}),
+            })),
+            request.dpi,
+            request.bleedMm,
+          ).plans
           const geometries = pdfPlans.map(({ geometry }) => geometry)
           const pdfPages = []
+          let encodedBytes = 0
           for (let index = 0; index < pages.length; index += 1) {
             const page = pages[index]
             const { geometry, renderMultiplier } = pdfPlans[index]
@@ -3910,9 +4060,15 @@ export default function EditorApplication() {
                 url,
                 geometry,
                 controller.signal,
-                { cropMarks: request.cropMarks },
+                {
+                  cropMarks: request.cropMarks,
+                  compression: request.pdfCompression,
+                  jpegQuality: request.jpegQuality,
+                },
               ),
             )
+            encodedBytes += pdfPages[pdfPages.length - 1].data.byteLength
+            preflight.assertPdfEncodedByteBudget(encodedBytes)
             updateProgress(
               ((index + 1) / pages.length) * 0.8,
               `${index + 1} / ${pages.length}`,
@@ -4074,7 +4230,8 @@ export default function EditorApplication() {
           message:
             error instanceof DOMException && error.name === 'AbortError'
               ? designUi.status.exportCancelled
-              : userFacingErrorMessage(error, designUi.status.exportFailed),
+              : (pdfExportErrorMessage(error, locale) ??
+                userFacingErrorMessage(error, designUi.status.exportFailed)),
         })
       } finally {
         if (designExportAbortRef.current === controller) {
@@ -4083,7 +4240,7 @@ export default function EditorApplication() {
         }
       }
     },
-    [designUi, renderDesignPage, synchronizeActiveDesignPage],
+    [designUi, locale, renderDesignPage, synchronizeActiveDesignPage],
   )
 
   const commitLayerRename = () => {
@@ -4095,9 +4252,9 @@ export default function EditorApplication() {
 
   const onDrop = async (event: DragEvent) => {
     event.preventDefault()
-    if (busyRef.current) return
     dragDepthRef.current = 0
     setDragActive(false)
+    if (busyRef.current || pdfFile) return
     const engine = engineRef.current
     const dropTarget = engine?.getCanvasDropTarget(event.nativeEvent)
     // The drag data store becomes protected as soon as this event dispatch
@@ -4177,6 +4334,11 @@ export default function EditorApplication() {
       return
     }
     if (
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf')
+    ) {
+      startPdfImport(file)
+    } else if (
       file.type === 'image/svg+xml' ||
       file.name.toLowerCase().endsWith('.svg')
     ) {
@@ -4187,8 +4349,7 @@ export default function EditorApplication() {
     } else {
       setStatus({
         kind: 'error',
-        message:
-          'PNG、JPEG、WebP、SVGまたはPixelweaveプロジェクトを選択してください。',
+        message: pdfCopy(locale).unsupportedFile,
       })
     }
   }
@@ -4243,7 +4404,12 @@ export default function EditorApplication() {
         event.key === 'Escape'
       ) {
         event.preventDefault()
-        setActiveDialog(null)
+        if (activeDialog === 'pdf') {
+          if (!pdfCommitRef.current) {
+            setPdfFile(null)
+            setActiveDialog(null)
+          }
+        } else setActiveDialog(null)
         return
       }
       const shortcut = resolveEditorShortcut(event, {
@@ -4410,6 +4576,7 @@ export default function EditorApplication() {
       aria-busy={busy}
       onDragEnter={(event) => {
         event.preventDefault()
+        if (busyRef.current || pdfFile) return
         dragDepthRef.current += 1
         setDragActive(true)
       }}
@@ -5806,7 +5973,7 @@ export default function EditorApplication() {
         className="visually-hidden-input"
         aria-label="画像ファイルを選択"
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg,application/pdf,.pdf"
         onChange={(event) => void onImageInput(event)}
       />
       <input
@@ -5814,7 +5981,7 @@ export default function EditorApplication() {
         className="visually-hidden-input"
         aria-label="プロジェクトファイルを選択"
         type="file"
-        accept=".pwx.json,.json,application/json"
+        accept=".pwx.json,.json,application/json,application/pdf,.pdf"
         onChange={(event) => void onProjectInput(event)}
       />
 
@@ -5824,7 +5991,7 @@ export default function EditorApplication() {
             <Glyph>＋</Glyph>
           </span>
           <strong>ここにドロップして開く</strong>
-          <p>PNG・JPEG・WebP・SVG・Pixelweave project</p>
+          <p>{pdfCopy(locale).dropFormats}</p>
         </div>
       ) : null}
 
@@ -6041,6 +6208,24 @@ export default function EditorApplication() {
         </Modal>
       ) : null}
 
+      {activeDialog === 'pdf' && pdfFile ? (
+        <Modal
+          title={pdfCopy(locale).title}
+          description={pdfCopy(locale).description}
+          closeLabel={ui.close}
+          onClose={closePdfImport}
+        >
+          <Suspense fallback={<p role="status">{pdfCopy(locale).loading}</p>}>
+            <PdfImportDialog
+              file={pdfFile}
+              locale={locale}
+              onImport={importPdfPages}
+              onClose={closePdfImport}
+            />
+          </Suspense>
+        </Modal>
+      ) : null}
+
       {activeDialog === 'export' ? (
         <Modal
           title={ui.exportTitle}
@@ -6048,6 +6233,16 @@ export default function EditorApplication() {
           closeLabel={ui.close}
           onClose={() => setActiveDialog(null)}
         >
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              setStudioTab('design')
+              setActiveDialog('pdf-export')
+            }}
+          >
+            {pdfCopy(locale).exportSettings}
+          </button>
           <ExportImageForm
             settings={exportSettings}
             onChange={setExportSettings}
@@ -6061,7 +6256,7 @@ export default function EditorApplication() {
         </Modal>
       ) : null}
 
-      {activeDialog === 'studio' ? (
+      {activeDialog === 'studio' || activeDialog === 'pdf-export' ? (
         <Modal
           title={ui.studioTitle}
           description={ui.studioDescription}
@@ -6110,6 +6305,10 @@ export default function EditorApplication() {
             >
               {studioTab === 'design' ? (
                 <DesignStudioPanel
+                  initialTab={
+                    activeDialog === 'pdf-export' ? 'export' : 'pages'
+                  }
+                  initialExportFormat="pdf"
                   locale={locale}
                   busy={busy}
                   pages={designPages}

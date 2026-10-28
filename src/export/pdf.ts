@@ -49,6 +49,13 @@ export type RasterPdfPage =
       encoding: 'jpeg'
       data: Uint8Array
     }
+  | {
+      width: number
+      height: number
+      /** Zlib-wrapped RGB samples, as required by PDF's FlateDecode filter. */
+      encoding: 'flate'
+      data: Uint8Array
+    }
 
 export interface PdfExportProgress {
   phase: 'prepare' | 'pages' | 'finalize'
@@ -233,14 +240,14 @@ const validateRasterPage = (
       )
     }
   } else if (page.data.byteLength === 0) {
-    throw new RangeError(`PDF page ${index + 1} JPEG data cannot be empty.`)
+    throw new RangeError(`PDF page ${index + 1} image data cannot be empty.`)
   }
 }
 
 /**
  * Builds a dependency-free PDF 1.7 file with one full-bleed raster XObject per
- * page. JPEG input stays compressed; RGB input is intentionally uncompressed
- * and is mainly useful for deterministic tests or an upstream compressor.
+ * page. JPEG and Flate input stay compressed; RGB input remains available for
+ * deterministic fixtures. Browser exports compress each page before assembly.
  */
 export const buildRasterPdf = async (
   pages: readonly RasterPdfPage[],
@@ -295,7 +302,12 @@ export const buildRasterPdf = async (
     const imageObjectNumber = pageObjectNumber + 1
     const contentObjectNumber = pageObjectNumber + 2
     const imageName = `Im${index + 1}`
-    const imageFilter = page.encoding === 'jpeg' ? ' /Filter /DCTDecode' : ''
+    const imageFilter =
+      page.encoding === 'jpeg'
+        ? ' /Filter /DCTDecode'
+        : page.encoding === 'flate'
+          ? ' /Filter /FlateDecode'
+          : ''
     const content = ascii(
       `q\n${pdfNumber(pageGeometry.mediaBoxPoints[2])} 0 0 ${pdfNumber(pageGeometry.mediaBoxPoints[3])} 0 0 cm\n/${imageName} Do\nQ`,
     )

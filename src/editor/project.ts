@@ -31,6 +31,7 @@ import {
   type ProjectPagePhysicalSize,
   type ProjectPageTimeline,
   type ProjectPageTransition,
+  type ProjectPdfImportMetadata,
   type SupportedProjectSchemaVersion,
 } from './types'
 
@@ -323,6 +324,9 @@ const validateEditorState = (
     ...(value as JsonObject),
     guides,
     snapTolerance: value.snapTolerance,
+    ...(value.pdfImport === undefined
+      ? {}
+      : { pdfImport: validatePdfImportMetadata(value.pdfImport, path) }),
     ...(value.selectionMask === undefined
       ? {}
       : {
@@ -332,6 +336,43 @@ const validateEditorState = (
             path,
           ),
         }),
+  }
+}
+
+const PDF_IMPORT_METADATA_KEYS = new Set([
+  'kind',
+  'pageNumber',
+  'widthMm',
+  'heightMm',
+  'rotation',
+  'dpi',
+])
+
+/** A small, explicit envelope prevents accidentally persisting the source PDF. */
+const validatePdfImportMetadata = (
+  value: unknown,
+  path: string,
+): ProjectPdfImportMetadata => {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !PDF_IMPORT_METADATA_KEYS.has(key)) ||
+    value.kind !== 'rasterized-pdf' ||
+    !Number.isSafeInteger(value.pageNumber) ||
+    (value.pageNumber as number) < 1 ||
+    !isFiniteInRange(value.widthMm, 0.01, MAX_PHYSICAL_PAGE_MILLIMETERS) ||
+    !isFiniteInRange(value.heightMm, 0.01, MAX_PHYSICAL_PAGE_MILLIMETERS) ||
+    ![0, 90, 180, 270].includes(value.rotation as number) ||
+    !isFiniteInRange(value.dpi, 36, 2_400)
+  ) {
+    invalidSchema(`${path}.pdfImport is invalid`)
+  }
+  return {
+    kind: 'rasterized-pdf',
+    pageNumber: value.pageNumber as number,
+    widthMm: value.widthMm,
+    heightMm: value.heightMm,
+    rotation: value.rotation as ProjectPdfImportMetadata['rotation'],
+    dpi: value.dpi,
   }
 }
 

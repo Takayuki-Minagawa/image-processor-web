@@ -43,6 +43,7 @@ import type {
 } from '../editor/fabricEngine'
 import type {
   ProjectAnimationPreset,
+  ProjectPagePhysicalSize,
   ProjectPageTimeline,
   ProjectPageTransition,
 } from '../editor/types'
@@ -63,6 +64,7 @@ import {
   type TableModel,
 } from '../tables'
 import { resolveAnimationSchedule } from '../animation/timeline'
+import { createPdfExportPreflight } from '../export/pdfPreflight'
 import './DesignStudioPanel.css'
 
 interface LocalFontDataLike {
@@ -84,6 +86,8 @@ export interface DesignPageSummary {
   thumbnail?: string
   durationMs: number
   timeline?: ProjectPageTimeline
+  physicalSize?: ProjectPagePhysicalSize
+  pdfImportDpi?: number
 }
 
 export interface DesignTextRequest {
@@ -143,6 +147,8 @@ export interface DesignExportRequest {
   dpi: number
   bleedMm: number
   cropMarks: boolean
+  pdfCompression: 'lossless' | 'jpeg'
+  jpegQuality: number
 }
 
 export interface DesignExportProgress {
@@ -162,6 +168,8 @@ export interface DesignPageSizeRequest {
 }
 
 export interface DesignStudioPanelProps {
+  initialTab?: DesignTab
+  initialExportFormat?: DesignExportRequest['format']
   locale: AppLocale
   busy: boolean
   pages: readonly DesignPageSummary[]
@@ -264,6 +272,8 @@ const formatDesignTextList = (value: string, style: TextListStyle): string => {
 }
 
 export default function DesignStudioPanel({
+  initialTab = 'pages',
+  initialExportFormat = 'pdf',
   locale,
   busy,
   pages,
@@ -316,7 +326,7 @@ export default function DesignStudioPanel({
   onCancelExport,
 }: DesignStudioPanelProps) {
   const copy = designStudioCopy(locale)
-  const [tab, setTab] = useState<DesignTab>('pages')
+  const [tab, setTab] = useState<DesignTab>(initialTab)
   const [query, setQuery] = useState('')
   const [assetCategory, setAssetCategory] = useState('')
   const [recentAssetIds, setRecentAssetIds] = useState<string[]>([])
@@ -363,12 +373,16 @@ export default function DesignStudioPanel({
   const [animation, setAnimation] = useState<ProjectAnimationPreset>('fade')
   const [playing, setPlaying] = useState(false)
   const [exportFormat, setExportFormat] =
-    useState<DesignExportRequest['format']>('pdf')
+    useState<DesignExportRequest['format']>(initialExportFormat)
   const [exportScope, setExportScope] =
     useState<DesignExportRequest['scope']>('all')
   const [dpi, setDpi] = useState(300)
   const [bleedMm, setBleedMm] = useState(0)
   const [cropMarks, setCropMarks] = useState(false)
+  const [pdfCompression, setPdfCompression] = useState<'lossless' | 'jpeg'>(
+    'lossless',
+  )
+  const [jpegQuality, setJpegQuality] = useState(0.94)
   const [selectedExportPageIds, setSelectedExportPageIds] = useState<string[]>(
     () => pages.map(({ id }) => id),
   )
@@ -432,21 +446,32 @@ export default function DesignStudioPanel({
       return valid.length > 0 ? valid : pages.map(({ id }) => id)
     })
   }, [pages])
-  const estimatedExportMegabytes = useMemo(() => {
-    const selectedPages =
+  const selectedExportPages = useMemo(
+    () =>
       exportScope === 'active' && activePage
         ? [activePage]
         : exportScope === 'selected'
           ? pages.filter(({ id }) => selectedExportPageIds.includes(id))
-          : pages
-    const pixels = selectedPages.reduce(
+          : pages,
+    [activePage, exportScope, pages, selectedExportPageIds],
+  )
+  const pdfPreflight = useMemo(() => {
+    if (exportFormat !== 'pdf') return undefined
+    try {
+      return createPdfExportPreflight(selectedExportPages, dpi, bleedMm)
+    } catch {
+      return undefined
+    }
+  }, [bleedMm, dpi, exportFormat, selectedExportPages])
+  const estimatedExportMegabytes = useMemo(() => {
+    const pixels = selectedExportPages.reduce(
       (total, page) => total + page.width * page.height,
       0,
     )
     const bytesPerPixel =
       exportFormat === 'gif' ? 0.45 : exportFormat === 'video' ? 0.3 : 0.72
     return Math.max(0.1, (pixels * bytesPerPixel) / (1024 * 1024))
-  }, [activePage, exportFormat, exportScope, pages, selectedExportPageIds])
+  }, [exportFormat, selectedExportPages])
 
   const updateGridBoundaryDraft = (id: string, value: number): void => {
     gridBoundaryDraftRef.current.set(id, value)
@@ -2099,11 +2124,95 @@ export default function DesignStudioPanel({
                     ))}
                   </fieldset>
                 ) : null}
+                {exportFormat === 'pdf' ? (
+                  <>
+                    <div className="design-inline-fields">
+                      <label>
+                        {copy.export.compression}
+                        <select
+                          value={pdfCompression}
+                          onChange={(event) =>
+                            setPdfCompression(
+                              event.target.value as 'lossless' | 'jpeg',
+                            )
+                          }
+                        >
+                          <option value="lossless">
+                            {copy.export.lossless}
+                          </option>
+                          <option value="jpeg">{copy.export.jpeg}</option>
+                        </select>
+                      </label>
+                      {pdfCompression === 'jpeg' ? (
+                        <label>
+                          {copy.export.jpegQuality}
+                          <input
+                            type="number"
+                            min="10"
+                            max="100"
+                            value={Math.round(jpegQuality * 100)}
+                            onChange={(event) =>
+                              setJpegQuality(Number(event.target.value) / 100)
+                            }
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    <p>{copy.export.rasterNotice}</p>
+                    <p>{copy.export.pdfPreservationNotice}</p>
+                    {pdfPreflight ? (
+                      <div
+                        className="design-pdf-preflight"
+                        aria-label={copy.export.preflight}
+                      >
+                        <strong>
+                          {copy.export.outputPages}:{' '}
+                          {selectedExportPages.length}
+                        </strong>
+                        <ul>
+                          {pdfPreflight.plans.map(({ geometry }, index) => (
+                            <li key={selectedExportPages[index].id}>
+                              {selectedExportPages[index].name}:{' '}
+                              {geometry.trimWidthMm.toFixed(2)} ×{' '}
+                              {geometry.trimHeightMm.toFixed(2)} mm ·{' '}
+                              {geometry.dpi} DPI
+                            </li>
+                          ))}
+                        </ul>
+                        {pdfPreflight.mixedSizes ? (
+                          <p>{copy.export.mixedSizes}</p>
+                        ) : null}
+                        {pdfPreflight.upscaledPages.length > 0 ? (
+                          <p role="status">
+                            {copy.export.resolutionNotice} (
+                            {pdfPreflight.upscaledPages.join(', ')})
+                          </p>
+                        ) : null}
+                        <p>
+                          {copy.export.rawSize}:{' '}
+                          {(
+                            pdfPreflight.uncompressedBytes /
+                            (1024 * 1024)
+                          ).toFixed(1)}{' '}
+                          MiB
+                        </p>
+                      </div>
+                    ) : (
+                      <p role="alert">{copy.export.pdfLimitNotice}</p>
+                    )}
+                  </>
+                ) : null}
                 <button
                   type="button"
                   disabled={
                     busy ||
                     Boolean(exportProgress) ||
+                    (exportFormat === 'pdf' &&
+                      (!pdfPreflight ||
+                        (pdfCompression === 'jpeg' &&
+                          (!Number.isFinite(jpegQuality) ||
+                            jpegQuality < 0.1 ||
+                            jpegQuality > 1)))) ||
                     (exportScope === 'selected' &&
                       selectedExportPageIds.length === 0)
                   }
@@ -2126,16 +2235,20 @@ export default function DesignStudioPanel({
                         dpi: safeDpi,
                         bleedMm: safeBleed,
                         cropMarks: safeBleed > 0 && cropMarks,
+                        pdfCompression,
+                        jpegQuality,
                       })
                     })()
                   }
                 >
                   <Download aria-hidden="true" /> {copy.export.export}
                 </button>
-                <p>
-                  {copy.export.estimatedSize}:{' '}
-                  {estimatedExportMegabytes.toFixed(1)} MB
-                </p>
+                {exportFormat !== 'pdf' ? (
+                  <p>
+                    {copy.export.estimatedSize}:{' '}
+                    {estimatedExportMegabytes.toFixed(1)} MB
+                  </p>
+                ) : null}
                 {exportProgress ? (
                   <div className="design-export-progress" role="status">
                     <div>

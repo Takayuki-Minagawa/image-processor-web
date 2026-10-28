@@ -1,4 +1,5 @@
 import type { RasterPdfGeometry, RasterPdfPage } from './pdf'
+import { compressPdfRgb, rgbaToWhiteRgb } from './pdfCompression'
 
 export interface IndexedRasterFrame {
   width: number
@@ -125,50 +126,93 @@ export const calculateCropMarkSegments = (
   ]
 }
 
-/** Places the trim image inside the requested bleed area and JPEG-encodes it. */
+/** Composites over white and encodes sequential strips without losing RGB samples. */
 export async function dataUrlToPdfRaster(
   dataUrl: string,
   geometry: RasterPdfGeometry,
   signal?: AbortSignal,
-  options: { cropMarks?: boolean } = {},
+  options: {
+    cropMarks?: boolean
+    compression?: 'lossless' | 'jpeg'
+    jpegQuality?: number
+  } = {},
 ): Promise<RasterPdfPage> {
   throwIfAborted(signal)
   const image = await loadImage(dataUrl, signal)
   const context = canvas2d(geometry.rasterWidth, geometry.rasterHeight)
-  context.fillStyle = '#ffffff'
-  context.fillRect(0, 0, geometry.rasterWidth, geometry.rasterHeight)
-  const bleedX = Math.round(
-    (geometry.bleedMm / geometry.mediaWidthMm) * geometry.rasterWidth,
-  )
-  const bleedY = Math.round(
-    (geometry.bleedMm / geometry.mediaHeightMm) * geometry.rasterHeight,
-  )
-  context.drawImage(
-    image,
-    bleedX,
-    bleedY,
-    geometry.rasterWidth - bleedX * 2,
-    geometry.rasterHeight - bleedY * 2,
-  )
-  if (options.cropMarks) {
-    context.save()
-    context.strokeStyle = '#111111'
-    context.lineWidth = Math.max(1, Math.round(geometry.dpi / 300))
-    context.beginPath()
-    calculateCropMarkSegments(geometry).forEach(({ x1, y1, x2, y2 }) => {
-      context.moveTo(x1, y1)
-      context.lineTo(x2, y2)
+  try {
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, geometry.rasterWidth, geometry.rasterHeight)
+    const bleedX = Math.round(
+      (geometry.bleedMm / geometry.mediaWidthMm) * geometry.rasterWidth,
+    )
+    const bleedY = Math.round(
+      (geometry.bleedMm / geometry.mediaHeightMm) * geometry.rasterHeight,
+    )
+    context.drawImage(
+      image,
+      bleedX,
+      bleedY,
+      geometry.rasterWidth - bleedX * 2,
+      geometry.rasterHeight - bleedY * 2,
+    )
+    if (options.cropMarks) {
+      context.save()
+      context.strokeStyle = '#111111'
+      context.lineWidth = Math.max(1, Math.round(geometry.dpi / 300))
+      context.beginPath()
+      calculateCropMarkSegments(geometry).forEach(({ x1, y1, x2, y2 }) => {
+        context.moveTo(x1, y1)
+        context.lineTo(x2, y2)
+      })
+      context.stroke()
+      context.restore()
+    }
+    throwIfAborted(signal)
+    if (options.compression === 'jpeg') {
+      const quality = options.jpegQuality ?? 0.94
+      if (!Number.isFinite(quality) || quality < 0.1 || quality > 1) {
+        throw new RangeError('JPEG quality must be between 0.1 and 1.')
+      }
+      const blob = await canvasToBlob(context.canvas, 'image/jpeg', quality)
+      throwIfAborted(signal)
+      const data = new Uint8Array(await blob.arrayBuffer())
+      throwIfAborted(signal)
+      return {
+        width: geometry.rasterWidth,
+        height: geometry.rasterHeight,
+        encoding: 'jpeg',
+        data,
+      }
+    }
+    let row = 0
+    const rowsPerChunk = Math.max(1, Math.floor(262_144 / geometry.rasterWidth))
+    const source = new ReadableStream<BufferSource>({
+      async pull(controller) {
+        throwIfAborted(signal)
+        const rows = Math.min(rowsPerChunk, geometry.rasterHeight - row)
+        controller.enqueue(
+          rgbaToWhiteRgb(
+            context.getImageData(0, row, geometry.rasterWidth, rows).data,
+          ),
+        )
+        row += rows
+        if (row === geometry.rasterHeight) controller.close()
+        else await new Promise((resolve) => globalThis.setTimeout(resolve, 0))
+      },
     })
-    context.stroke()
-    context.restore()
-  }
-  throwIfAborted(signal)
-  const blob = await canvasToBlob(context.canvas, 'image/jpeg', 0.94)
-  return {
-    width: geometry.rasterWidth,
-    height: geometry.rasterHeight,
-    encoding: 'jpeg',
-    data: new Uint8Array(await blob.arrayBuffer()),
+    const data = await compressPdfRgb(source, signal)
+    throwIfAborted(signal)
+    return {
+      width: geometry.rasterWidth,
+      height: geometry.rasterHeight,
+      encoding: 'flate',
+      data,
+    }
+  } finally {
+    context.canvas.width = 0
+    context.canvas.height = 0
+    image.src = ''
   }
 }
 

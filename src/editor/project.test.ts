@@ -63,6 +63,65 @@ describe('project schema', () => {
     expect(parseProject(serializeProject(project))).toEqual(project)
   })
 
+  it('round-trips bounded PDF provenance as optional v4 editor metadata', () => {
+    const pdfImport = {
+      kind: 'rasterized-pdf' as const,
+      pageNumber: 3,
+      widthMm: 297,
+      heightMm: 210,
+      rotation: 90 as const,
+      dpi: 150,
+    }
+    const project = createProjectDocument({
+      canvasSize: designSizeToPixels(297, 210, 'mm', 150),
+      fabricCanvas: { objects: [] },
+      editorState: { pdfImport },
+      physicalSize: {
+        unit: 'mm',
+        widthMm: 297,
+        heightMm: 210,
+        sourceDpi: 150,
+      },
+    })
+    expect(project.schemaVersion).toBe(4)
+    expect(
+      parseProject(serializeProject(project)).editorState.pdfImport,
+    ).toEqual(pdfImport)
+  })
+
+  it.each([
+    { pageNumber: 0 },
+    { pageNumber: 1.5 },
+    { rotation: 45 },
+    { rotation: '90' },
+    { widthMm: 0 },
+    { heightMm: 10_001 },
+    { dpi: 0 },
+    { kind: 'editable-pdf' },
+    { bytes: 'original PDF bytes' },
+    { fileName: 'private-source.pdf' },
+  ])('rejects invalid or private PDF provenance %j', (change) => {
+    const project = makeProject()
+    const pdfImport = {
+      kind: 'rasterized-pdf',
+      pageNumber: 1,
+      widthMm: 210,
+      heightMm: 297,
+      rotation: 0,
+      dpi: 150,
+      ...change,
+    }
+    expect(() =>
+      validateProjectDocument({
+        ...project,
+        pages: project.pages.map((page) => ({
+          ...page,
+          editorState: { ...page.editorState, pdfImport },
+        })),
+      }),
+    ).toThrow(/pdfImport is invalid/u)
+  })
+
   it('round-trips print dimensions and rejects metadata that mismatches pixels', () => {
     const canvasSize = designSizeToPixels(210, 297, 'mm', 300)
     const project = createProjectDocument({
