@@ -5,6 +5,7 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 ## 主な機能
 
 - PNG / JPEG / WebP / SVGのドラッグ&ドロップ、ファイル選択、クリップボード貼り付け
+- 名前付き出力設定プリセット（画像・SVG／画像PDF、保存・適用・更新・削除）
 - SVGの原寸ページ作成（px・mm等の絶対単位、viewBox推定の明示確認）、既存文書へのページ追加
 - PDFのファイル選択・ドラッグ&ドロップ、ページ範囲・DPIを指定した原寸の背景画像取込、新規文書または既存文書へのページ追加
 - 選択、移動、拡大縮小、回転、パン、ズーム、crop、整列、等間隔分布、ルーラーからドラッグできるガイド、スナップ
@@ -64,6 +65,10 @@ descriptorにはversion、bytes、SHA-256 `309c8469258dda742793dce0ebea8e6dd3931
 現在の保存形式は`.pwx.json` schema version 4です。ドキュメントは複数ページを持ち、各ページにpixel寸法、任意のmm仕上がり寸法と作成時DPI、Fabric.js payload、canonicalレイヤーツリー、背景、ガイド、スナップ許容距離、lossless符号化した8bit選択・レイヤーマスク、任意のアニメーションtimelineを保存します。canonicalレイヤーツリーとrenderer payloadが矛盾するfileは、canvas復元前に拒否します。
 
 version 1・2の単一Canvasは1ページのドキュメントへ、version 3の複数ページは静止timelineを補ってversion 4へ移行します。次回保存時はversion 4になります。serializerは互換aliasを重複出力しません。未知version、寸法不一致、過大な画像・レイヤー・マスク・timelineは、現在のドキュメントを変更せず明示エラーにします。
+
+### 出力設定を再利用する
+
+「書き出す」またはPDF設定の「出力設定プリセット」を開き、現在の形式・品質・倍率やPDFのDPI・圧縮・塗り足しを名前付きで保存できます。「適用」で設定を呼び出し、出力範囲と寸法を確認してから書き出します。ページやオブジェクトの選択は変わりません。ブラウザ内に合計50件まで保存し、保存不可時はタブ内の一時保存を案内します。詳細は[出力設定プリセット](./docs/OUTPUT_PRESETS.md)を参照してください。
 
 ### SVGの原寸で制作
 
@@ -152,6 +157,7 @@ typescript-eslint向けには`@typescript/typescript6`を`typescript` aliasと�
 
 - [実装状況](./docs/IMPLEMENTATION_STATUS.md)
 - [Architecture Decision Records](./docs/adr/)
+- [出力設定プリセット](./docs/OUTPUT_PRESETS.md)
 - [SVG原寸入力仕様と検証境界](./docs/SVG_IMPORT.md)
 - [PDF入出力仕様と検証境界](./docs/PDF_IO.md)
 

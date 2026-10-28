@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +16,55 @@ import {
 import DesignStudioPanel, {
   type DesignStudioPanelProps,
 } from './DesignStudioPanel'
+import type { ExportPresetSettings } from '../export/presets'
+
+vi.mock('./ExportPresetControls', () => ({
+  default: ({
+    settings,
+    onApply,
+    disabled,
+  }: {
+    settings: ExportPresetSettings
+    onApply: (value: ExportPresetSettings) => void
+    disabled?: boolean
+  }) => (
+    <fieldset disabled={disabled} data-testid="pdf-preset-controls">
+      <output data-testid="pdf-preset-settings">
+        {JSON.stringify(settings)}
+      </output>
+      <button
+        type="button"
+        onClick={() =>
+          onApply({
+            kind: 'pdf',
+            dpi: 150,
+            bleedMm: 3,
+            cropMarks: true,
+            pdfCompression: 'jpeg',
+            jpegQuality: 0.8,
+          })
+        }
+      >
+        Apply PDF fixture
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onApply({
+            kind: 'pdf',
+            dpi: 300,
+            bleedMm: 0,
+            cropMarks: true,
+            pdfCompression: 'lossless',
+            jpegQuality: 0.94,
+          })
+        }
+      >
+        Apply no-bleed fixture
+      </button>
+    </fieldset>
+  ),
+}))
 
 const originalDocumentFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
 const originalQueryLocalFonts = Object.getOwnPropertyDescriptor(
@@ -276,6 +326,150 @@ describe('DesignStudioPanel', () => {
       target: { value: '0' },
     })
     expect(exportButton).toBeDisabled()
+  })
+
+  it('applies PDF settings together, refreshes preflight, and retains the selected page range', async () => {
+    const user = userEvent.setup()
+    const onExport = vi.fn()
+    render(
+      <DesignStudioPanel
+        {...props({
+          initialTab: 'export',
+          onExport,
+          pages: [
+            {
+              id: 'page-1',
+              name: 'First',
+              width: 1080,
+              height: 1080,
+              durationMs: 3000,
+            },
+            {
+              id: 'page-2',
+              name: 'Second',
+              width: 1080,
+              height: 1080,
+              durationMs: 3000,
+            },
+          ],
+        })}
+      />,
+    )
+    expect(
+      JSON.parse(screen.getByTestId('pdf-preset-settings').textContent!),
+    ).toEqual({
+      kind: 'pdf',
+      dpi: 300,
+      bleedMm: 0,
+      cropMarks: false,
+      pdfCompression: 'lossless',
+      jpegQuality: 0.94,
+    })
+    await user.selectOptions(screen.getByLabelText('Page range'), 'selected')
+    await user.click(
+      within(
+        screen.getByRole('group', { name: 'Pages to export' }),
+      ).getByLabelText('1. First'),
+    )
+    await user.click(screen.getByRole('button', { name: 'Apply PDF fixture' }))
+    expect(onExport).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('DPI')).toHaveValue(150)
+    expect(screen.getByLabelText('Bleed mm')).toHaveValue(3)
+    expect(screen.getByLabelText('Add crop marks')).toBeChecked()
+    expect(screen.getByLabelText('Image compression')).toHaveValue('jpeg')
+    expect(screen.getByLabelText('JPEG quality (10–100)')).toHaveValue(80)
+    expect(screen.getByLabelText('Page range')).toHaveValue('selected')
+    expect(screen.getByLabelText('PDF export checks')).toHaveTextContent(
+      'Second: 182.88 × 182.88 mm · 150 DPI',
+    )
+    await user.click(screen.getAllByRole('button', { name: 'Export' }).at(-1)!)
+    expect(onExport).toHaveBeenCalledWith({
+      format: 'pdf',
+      scope: 'selected',
+      selectedPageIds: ['page-2'],
+      dpi: 150,
+      bleedMm: 3,
+      cropMarks: true,
+      pdfCompression: 'jpeg',
+      jpegQuality: 0.8,
+    })
+  })
+
+  it('clears crop marks when bleed is removed or a no-bleed preset is applied', async () => {
+    const user = userEvent.setup()
+    render(<DesignStudioPanel {...props({ initialTab: 'export' })} />)
+    await user.click(screen.getByRole('button', { name: 'Apply PDF fixture' }))
+    fireEvent.change(screen.getByLabelText('Bleed mm'), {
+      target: { value: '0' },
+    })
+    const marks = screen.getByLabelText('Add crop marks')
+    expect(marks).not.toBeChecked()
+    expect(marks).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Bleed mm'), {
+      target: { value: '3' },
+    })
+    expect(marks).not.toBeChecked()
+    await user.click(marks)
+    expect(marks).toBeChecked()
+    await user.click(
+      screen.getByRole('button', { name: 'Apply no-bleed fixture' }),
+    )
+    expect(marks).not.toBeChecked()
+    expect(
+      JSON.parse(screen.getByTestId('pdf-preset-settings').textContent!)
+        .cropMarks,
+    ).toBe(false)
+  })
+
+  it('passes invalid current values to preset validation without silently clamping them', () => {
+    render(<DesignStudioPanel {...props({ initialTab: 'export' })} />)
+    fireEvent.change(screen.getByLabelText('DPI'), { target: { value: '601' } })
+    fireEvent.change(screen.getByLabelText('Bleed mm'), {
+      target: { value: '-1' },
+    })
+    fireEvent.change(screen.getByLabelText('Image compression'), {
+      target: { value: 'jpeg' },
+    })
+    fireEvent.change(screen.getByLabelText('JPEG quality (10–100)'), {
+      target: { value: '0' },
+    })
+    expect(
+      JSON.parse(screen.getByTestId('pdf-preset-settings').textContent!),
+    ).toMatchObject({ dpi: 601, bleedMm: -1, jpegQuality: 0 })
+    expect(
+      screen.getAllByRole('button', { name: 'Export' }).at(-1),
+    ).toBeDisabled()
+  })
+
+  it('shows preset controls only for PDF and disables them during work', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <DesignStudioPanel {...props({ initialTab: 'export' })} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Apply PDF fixture' }))
+    await user.click(screen.getByRole('button', { name: 'PNG (ZIP)' }))
+    expect(screen.queryByTestId('pdf-preset-controls')).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole('button', { name: 'PDF (raster images)' }),
+    )
+    expect(screen.getByLabelText('DPI')).toHaveValue(150)
+    rerender(
+      <DesignStudioPanel {...props({ initialTab: 'export', busy: true })} />,
+    )
+    expect(
+      screen.getByRole('button', { name: 'Apply PDF fixture' }),
+    ).toBeDisabled()
+    rerender(
+      <DesignStudioPanel
+        {...props({
+          initialTab: 'export',
+          exportProgress: { value: 0.2, label: '1 / 5' },
+        })}
+      />,
+    )
+    expect(
+      screen.getByRole('button', { name: 'Apply PDF fixture' }),
+    ).toBeDisabled()
   })
 
   it('shows physical page dimensions and resolution warnings before export', async () => {

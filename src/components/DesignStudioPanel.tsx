@@ -65,6 +65,8 @@ import {
 } from '../tables'
 import { resolveAnimationSchedule } from '../animation/timeline'
 import { createPdfExportPreflight } from '../export/pdfPreflight'
+import type { PdfPresetSettings } from '../export/presets'
+import ExportPresetControls from './ExportPresetControls'
 import './DesignStudioPanel.css'
 
 interface LocalFontDataLike {
@@ -376,13 +378,21 @@ export default function DesignStudioPanel({
     useState<DesignExportRequest['format']>(initialExportFormat)
   const [exportScope, setExportScope] =
     useState<DesignExportRequest['scope']>('all')
-  const [dpi, setDpi] = useState(300)
-  const [bleedMm, setBleedMm] = useState(0)
-  const [cropMarks, setCropMarks] = useState(false)
-  const [pdfCompression, setPdfCompression] = useState<'lossless' | 'jpeg'>(
-    'lossless',
-  )
-  const [jpegQuality, setJpegQuality] = useState(0.94)
+  const [pdfSettings, setPdfSettings] = useState<PdfPresetSettings>({
+    kind: 'pdf',
+    dpi: 300,
+    bleedMm: 0,
+    cropMarks: false,
+    pdfCompression: 'lossless',
+    jpegQuality: 0.94,
+  })
+  const { dpi, bleedMm, cropMarks, pdfCompression, jpegQuality } = pdfSettings
+  const updatePdfSettings = (update: Partial<PdfPresetSettings>): void => {
+    setPdfSettings((current) => {
+      const next = { ...current, ...update }
+      return { ...next, cropMarks: next.bleedMm > 0 && next.cropMarks }
+    })
+  }
   const [selectedExportPageIds, setSelectedExportPageIds] = useState<string[]>(
     () => pages.map(({ id }) => id),
   )
@@ -2054,6 +2064,16 @@ export default function DesignStudioPanel({
                     ),
                   )}
                 </div>
+                {exportFormat === 'pdf' ? (
+                  <ExportPresetControls
+                    locale={locale}
+                    settings={pdfSettings}
+                    disabled={busy || Boolean(exportProgress)}
+                    onApply={(settings) => {
+                      if (settings.kind === 'pdf') updatePdfSettings(settings)
+                    }}
+                  />
+                ) : null}
                 <div className="design-inline-fields">
                   <label>
                     {copy.export.range}
@@ -2077,7 +2097,9 @@ export default function DesignStudioPanel({
                       min="72"
                       max="600"
                       value={dpi}
-                      onChange={(event) => setDpi(Number(event.target.value))}
+                      onChange={(event) =>
+                        updatePdfSettings({ dpi: Number(event.target.value) })
+                      }
                     />
                   </label>
                   <label>
@@ -2089,7 +2111,9 @@ export default function DesignStudioPanel({
                       step="0.5"
                       value={bleedMm}
                       onChange={(event) =>
-                        setBleedMm(Number(event.target.value))
+                        updatePdfSettings({
+                          bleedMm: Number(event.target.value),
+                        })
                       }
                     />
                   </label>
@@ -2098,7 +2122,9 @@ export default function DesignStudioPanel({
                       type="checkbox"
                       checked={cropMarks}
                       disabled={bleedMm <= 0}
-                      onChange={(event) => setCropMarks(event.target.checked)}
+                      onChange={(event) =>
+                        updatePdfSettings({ cropMarks: event.target.checked })
+                      }
                     />
                     {copy.export.cropMarks}
                   </label>
@@ -2132,9 +2158,10 @@ export default function DesignStudioPanel({
                         <select
                           value={pdfCompression}
                           onChange={(event) =>
-                            setPdfCompression(
-                              event.target.value as 'lossless' | 'jpeg',
-                            )
+                            updatePdfSettings({
+                              pdfCompression: event.target.value as
+                                'lossless' | 'jpeg',
+                            })
                           }
                         >
                           <option value="lossless">
@@ -2152,7 +2179,9 @@ export default function DesignStudioPanel({
                             max="100"
                             value={Math.round(jpegQuality * 100)}
                             onChange={(event) =>
-                              setJpegQuality(Number(event.target.value) / 100)
+                              updatePdfSettings({
+                                jpegQuality: Number(event.target.value) / 100,
+                              })
                             }
                           />
                         </label>
@@ -2226,8 +2255,7 @@ export default function DesignStudioPanel({
                         20,
                         Math.max(0, Number.isFinite(bleedMm) ? bleedMm : 0),
                       )
-                      setDpi(safeDpi)
-                      setBleedMm(safeBleed)
+                      updatePdfSettings({ dpi: safeDpi, bleedMm: safeBleed })
                       return onExport({
                         format: exportFormat,
                         scope: exportScope,
