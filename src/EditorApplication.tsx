@@ -19,6 +19,9 @@ import AdjustmentControl from './components/AdjustmentControl'
 import SelectedTextEditor from './components/SelectedTextEditor'
 import { inspectorCopy } from './i18n.inspector'
 import { pdfCopy, pdfExportErrorMessage } from './i18n.pdf'
+import { svgCopy } from './i18n.svg'
+import type { SvgNativeGeometry } from './import/svgGeometry'
+import type { SvgImportTarget } from './components/SvgImportDialog'
 import { createEditorProjectMetadata } from './editor/projectMetadata'
 import type { PdfRasterPage } from './import/pdf'
 import type { PdfImportTarget } from './components/PdfImportDialog'
@@ -187,6 +190,7 @@ const ManualContent = lazy(() => import('./components/ManualContent'))
 const PreferenceControls = lazy(() => import('./components/PreferenceControls'))
 const DesignStudioPanel = lazy(() => import('./components/DesignStudioPanel'))
 const PdfImportDialog = lazy(() => import('./components/PdfImportDialog'))
+const SvgImportDialog = lazy(() => import('./components/SvgImportDialog'))
 const PresentationPreview = lazy(
   () => import('./components/PresentationPreview'),
 )
@@ -200,6 +204,7 @@ type DialogName =
   | 'manual'
   | 'shortcuts'
   | 'pdf'
+  | 'svg'
   | 'pdf-export'
   | null
 type StudioTab = 'design' | 'logo' | 'automation' | 'advanced'
@@ -768,7 +773,8 @@ export default function EditorApplication() {
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [activeDialog, setActiveDialog] = useState<DialogName>(null)
   const [pdfFile, setPdfFile] = useState<File | null>(null)
-  const pdfCommitRef = useRef(false)
+  const [svgFile, setSvgFile] = useState<File | null>(null)
+  const pageImportCommitRef = useRef(false)
   const [studioTab, setStudioTab] = useState<StudioTab>('design')
   const [projectName, setProjectName] = useState('無題のデザイン')
   const [dirty, setDirty] = useState(false)
@@ -2613,38 +2619,42 @@ export default function EditorApplication() {
   )
 
   const closePdfImport = () => {
-    if (pdfCommitRef.current) return
+    if (pageImportCommitRef.current) return
     setPdfFile(null)
     setActiveDialog(null)
   }
 
   const startPdfImport = (file: File) => {
-    if (busyRef.current || pdfCommitRef.current || pdfFile) return
+    if (busyRef.current || pageImportCommitRef.current || pdfFile || svgFile)
+      return
     setPdfFile(file)
     setActiveDialog('pdf')
   }
 
-  const importPdfPages = async (
-    rasters: PdfRasterPage[],
-    target: PdfImportTarget,
+  const closeSvgImport = () => {
+    if (pageImportCommitRef.current) return
+    setSvgFile(null)
+    setActiveDialog(null)
+  }
+
+  const startSvgImport = (file: File) => {
+    if (busyRef.current || pageImportCommitRef.current || pdfFile || svgFile)
+      return
+    setSvgFile(file)
+    setActiveDialog('svg')
+  }
+
+  const commitImportedPages = async (
+    prepared: DesignPageState[],
+    target: PdfImportTarget | SvgImportTarget,
     signal: AbortSignal,
+    copy: Pick<
+      ReturnType<typeof pdfCopy>,
+      'projectLimit' | 'untitled' | 'history' | 'imported'
+    >,
   ): Promise<boolean> => {
     const engine = engineRef.current
     if (!engine) return false
-    const copy = pdfCopy(locale)
-    if (
-      target === 'replace' &&
-      dirtyRef.current &&
-      !window.confirm(copy.confirmReplace)
-    )
-      return false
-    await waitForEditorOperations()
-    signal.throwIfAborted()
-    const { createPdfDesignPage } = await import('./editor/pdfPageAdapter')
-    const prepared: DesignPageState[] = []
-    for (const raster of rasters) {
-      prepared.push(await createPdfDesignPage(raster, { signal }))
-    }
     signal.throwIfAborted()
     const current = engine.snapshot()
     const existing = designPagesRef.current.map((page) =>
@@ -2689,7 +2699,7 @@ export default function EditorApplication() {
     signal.throwIfAborted()
     // All preparation is complete. From here the atomic commit finishes even
     // if the dialog receives a late cancellation request.
-    pdfCommitRef.current = true
+    pageImportCommitRef.current = true
     beginBusy()
     try {
       flushPendingHistory()
@@ -2730,9 +2740,52 @@ export default function EditorApplication() {
       setStatus({ kind: 'success', message: copy.imported })
       return true
     } finally {
-      pdfCommitRef.current = false
+      pageImportCommitRef.current = false
       endBusy()
     }
+  }
+
+  const importPdfPages = async (
+    rasters: PdfRasterPage[],
+    target: PdfImportTarget,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const copy = pdfCopy(locale)
+    if (
+      target === 'replace' &&
+      dirtyRef.current &&
+      !window.confirm(copy.confirmReplace)
+    )
+      return false
+    await waitForEditorOperations()
+    signal.throwIfAborted()
+    const { createPdfDesignPage } = await import('./editor/pdfPageAdapter')
+    const prepared: DesignPageState[] = []
+    for (const raster of rasters)
+      prepared.push(await createPdfDesignPage(raster, { signal }))
+    return commitImportedPages(prepared, target, signal, copy)
+  }
+
+  const importSvgPage = async (
+    geometry: SvgNativeGeometry,
+    target: SvgImportTarget,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const copy = svgCopy(locale)
+    if (
+      target === 'replace' &&
+      dirtyRef.current &&
+      !window.confirm(copy.confirmReplace)
+    )
+      return false
+    await waitForEditorOperations()
+    signal.throwIfAborted()
+    const { createSvgDesignPage } = await import('./editor/svgPageAdapter')
+    const page = await createSvgDesignPage(geometry, {
+      name: svgFile ? sanitizeFileStem(svgFile.name) : 'SVG',
+      signal,
+    })
+    return commitImportedPages([page], target, signal, copy)
   }
 
   const onImageInput = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -2879,6 +2932,11 @@ export default function EditorApplication() {
       file.name.toLowerCase().endsWith('.pdf')
     )
       startPdfImport(file)
+    else if (
+      file.type === 'image/svg+xml' ||
+      file.name.toLowerCase().endsWith('.svg')
+    )
+      startSvgImport(file)
     else await openProject(file)
   }
 
@@ -4258,7 +4316,7 @@ export default function EditorApplication() {
     event.preventDefault()
     dragDepthRef.current = 0
     setDragActive(false)
-    if (busyRef.current || pdfFile) return
+    if (busyRef.current || pdfFile || svgFile) return
     const engine = engineRef.current
     const dropTarget = engine?.getCanvasDropTarget(event.nativeEvent)
     // The drag data store becomes protected as soon as this event dispatch
@@ -4408,9 +4466,10 @@ export default function EditorApplication() {
         event.key === 'Escape'
       ) {
         event.preventDefault()
-        if (activeDialog === 'pdf') {
-          if (!pdfCommitRef.current) {
+        if (activeDialog === 'pdf' || activeDialog === 'svg') {
+          if (!pageImportCommitRef.current) {
             setPdfFile(null)
+            setSvgFile(null)
             setActiveDialog(null)
           }
         } else setActiveDialog(null)
@@ -4580,7 +4639,7 @@ export default function EditorApplication() {
       aria-busy={busy}
       onDragEnter={(event) => {
         event.preventDefault()
-        if (busyRef.current || pdfFile) return
+        if (busyRef.current || pdfFile || svgFile) return
         dragDepthRef.current += 1
         setDragActive(true)
       }}
@@ -5985,7 +6044,7 @@ export default function EditorApplication() {
         className="visually-hidden-input"
         aria-label="プロジェクトファイルを選択"
         type="file"
-        accept=".pwx.json,.json,application/json,application/pdf,.pdf"
+        accept=".pwx.json,.json,application/json,application/pdf,.pdf,image/svg+xml,.svg"
         onChange={(event) => void onProjectInput(event)}
       />
 
@@ -6209,6 +6268,24 @@ export default function EditorApplication() {
               </button>
             </div>
           </form>
+        </Modal>
+      ) : null}
+
+      {activeDialog === 'svg' && svgFile ? (
+        <Modal
+          title={svgCopy(locale).title}
+          description={svgCopy(locale).description}
+          closeLabel={ui.close}
+          onClose={closeSvgImport}
+        >
+          <Suspense fallback={<p role="status">{svgCopy(locale).loading}</p>}>
+            <SvgImportDialog
+              file={svgFile}
+              locale={locale}
+              onImport={importSvgPage}
+              onClose={closeSvgImport}
+            />
+          </Suspense>
         </Modal>
       ) : null}
 

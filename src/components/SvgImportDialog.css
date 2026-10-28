@@ -1,0 +1,37 @@
+.svg-import-form {
+  gap: 14px;
+}
+.svg-import-form p {
+  margin: 0;
+}
+.svg-import-form .field-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.svg-import-form fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.svg-import-form label {
+  display: grid;
+  gap: 6px;
+}
+.svg-import-form .svg-inferred-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.svg-import-form .svg-inferred-confirmation input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  accent-color: var(--violet);
+}
+.svg-file-name {
+  overflow-wrap: anywhere;
+}
