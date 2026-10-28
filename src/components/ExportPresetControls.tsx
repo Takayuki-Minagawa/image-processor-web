@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppLocale } from '../uiPreferences'
 import {
   exportPresetCopy,
@@ -49,32 +49,41 @@ export default function ExportPresetControls({
   const pendingRef = useRef(false)
   const activeRef = useRef(true)
   const readGenerationRef = useRef(0)
+  const selectedIdRef = useRef('')
+  const nameEditedRef = useRef(false)
+
+  const refresh = useCallback(async () => {
+    if (pendingRef.current) return
+    const generation = ++readGenerationRef.current
+    try {
+      const snapshot = await repository.list()
+      if (!activeRef.current || generation !== readGenerationRef.current) return
+      setPresets(snapshot.presets)
+      setPersisted(snapshot.persisted)
+      const current = snapshot.presets.find(
+        (preset) =>
+          preset.id === selectedIdRef.current &&
+          preset.settings.kind === settings.kind,
+      )
+      selectedIdRef.current = current?.id ?? ''
+      setSelectedId(selectedIdRef.current)
+      // Follow another tab's rename only while the name field is untouched.
+      // An intentional draft belongs to this tab and must not be replaced.
+      if (!nameEditedRef.current) setName(current?.name ?? '')
+    } catch (error) {
+      if (activeRef.current && generation === readGenerationRef.current)
+        setFeedback({
+          error: true,
+          message: exportPresetErrorMessage(error, locale),
+        })
+    } finally {
+      if (activeRef.current && generation === readGenerationRef.current)
+        setLoading(false)
+    }
+  }, [repository, locale, settings.kind])
 
   useEffect(() => {
     activeRef.current = true
-    const refresh = async () => {
-      if (pendingRef.current) return
-      const generation = ++readGenerationRef.current
-      try {
-        const snapshot = await repository.list()
-        if (!activeRef.current || generation !== readGenerationRef.current)
-          return
-        setPresets(snapshot.presets)
-        setPersisted(snapshot.persisted)
-        setSelectedId((id) =>
-          snapshot.presets.some((preset) => preset.id === id) ? id : '',
-        )
-      } catch (error) {
-        if (activeRef.current && generation === readGenerationRef.current)
-          setFeedback({
-            error: true,
-            message: exportPresetErrorMessage(error, locale),
-          })
-      } finally {
-        if (activeRef.current && generation === readGenerationRef.current)
-          setLoading(false)
-      }
-    }
     void refresh()
     const onStorage = (event: StorageEvent) => {
       if (event.key === null || event.key === EXPORT_PRESET_STORAGE_KEY)
@@ -86,7 +95,7 @@ export default function ExportPresetControls({
       readGenerationRef.current += 1
       window.removeEventListener('storage', onStorage)
     }
-  }, [repository, locale])
+  }, [refresh])
 
   const available = presets.filter(
     (preset) => preset.settings.kind === settings.kind,
@@ -122,6 +131,8 @@ export default function ExportPresetControls({
         if (!activeRef.current) return
         setPresets(snapshot.presets)
         setPersisted(snapshot.persisted)
+        selectedIdRef.current = ''
+        nameEditedRef.current = false
         setSelectedId('')
         setName('')
         setFeedback({
@@ -137,6 +148,8 @@ export default function ExportPresetControls({
         if (!activeRef.current) return
         setPresets(result.presets)
         setPersisted(result.persisted)
+        selectedIdRef.current = result.preset.id
+        nameEditedRef.current = false
         setSelectedId(result.preset.id)
         setName(result.preset.name)
         setFeedback({
@@ -156,7 +169,12 @@ export default function ExportPresetControls({
         })
     } finally {
       pendingRef.current = false
-      if (activeRef.current) setPending(false)
+      if (activeRef.current) {
+        setPending(false)
+        // A storage event may have arrived while this mutation was pending,
+        // or a rejected stale update may have read newer data. Reconcile both.
+        void refresh()
+      }
     }
   }
 
@@ -173,7 +191,9 @@ export default function ExportPresetControls({
               const preset = available.find(
                 ({ id }) => id === event.target.value,
               )
-              setSelectedId(preset?.id ?? '')
+              selectedIdRef.current = preset?.id ?? ''
+              nameEditedRef.current = false
+              setSelectedId(selectedIdRef.current)
               setName(preset?.name ?? '')
               setFeedback(null)
             }}
@@ -213,7 +233,10 @@ export default function ExportPresetControls({
           <input
             value={name}
             maxLength={80}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              nameEditedRef.current = true
+              setName(event.target.value)
+            }}
             onKeyDown={(event) => {
               // This control can live inside an export form. Naming a preset must not
               // implicitly submit that form and start downloading the document.

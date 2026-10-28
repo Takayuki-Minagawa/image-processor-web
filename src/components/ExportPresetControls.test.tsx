@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -219,4 +220,83 @@ describe('named output preset controls', () => {
     expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
     expect(onApply).not.toHaveBeenCalled()
   })
+
+  it.each(['addition', 'deletion'] as const)(
+    'refreshes an external %s received while a save response is pending',
+    async (change) => {
+      const data = new Map<string, string>()
+      const storage = {
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          data.set(key, value)
+        },
+      }
+      const first = new LocalExportPresetRepository({
+        storage,
+        lockManager: null,
+      })
+      const second = new LocalExportPresetRepository({
+        storage,
+        lockManager: null,
+      })
+      const saved = await first.save({
+        name: 'Existing',
+        settings: imageSettings,
+      })
+      const { onApply } = await show(first)
+      fireEvent.change(screen.getByLabelText('Saved presets'), {
+        target: { value: saved.preset.id },
+      })
+
+      let finishResponse!: () => void
+      const responseGate = new Promise<void>((resolve) => {
+        finishResponse = resolve
+      })
+      let didCommit!: () => void
+      const committed = new Promise<void>((resolve) => {
+        didCommit = resolve
+      })
+      const save = first.save.bind(first)
+      vi.spyOn(first, 'save').mockImplementation(async (input) => {
+        const snapshot = await save(input)
+        didCommit()
+        await responseGate
+        return snapshot
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Overwrite' }))
+      await committed
+      expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+
+      if (change === 'addition') {
+        await second.save({ name: 'Another tab', settings: otherSettings })
+      } else {
+        await second.remove(saved.preset.id)
+      }
+      await act(async () => {
+        window.dispatchEvent(
+          new StorageEvent('storage', { key: EXPORT_PRESET_STORAGE_KEY }),
+        )
+        finishResponse()
+      })
+
+      if (change === 'addition') {
+        expect(
+          await screen.findByRole('option', { name: 'Another tab' }),
+        ).toBeInTheDocument()
+        expect(screen.getByLabelText('Saved presets')).toHaveValue(
+          saved.preset.id,
+        )
+      } else {
+        await waitFor(() =>
+          expect(
+            screen.queryByRole('option', { name: 'Existing' }),
+          ).not.toBeInTheDocument(),
+        )
+        expect(screen.getByLabelText('Saved presets')).toHaveValue('')
+        expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+      }
+      expect(onApply).not.toHaveBeenCalled()
+    },
+  )
 })

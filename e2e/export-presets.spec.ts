@@ -163,6 +163,9 @@ test.describe('Named output settings presets', () => {
       .getByRole('button', { name: '上書き保存', exact: true })
       .click()
     await expect(
+      controls.getByLabel('保存したプリセット').locator('option:checked'),
+    ).toHaveText('Web half-size')
+    await expect(
       controls.getByLabel('保存したプリセット').locator('option'),
     ).toHaveCount(2)
     const saved = (await readLibrary(page)).presets
@@ -420,5 +423,130 @@ test.describe('Named output settings presets', () => {
       controls.getByLabel('保存したプリセット').locator('option'),
     ).toHaveCount(2)
     expect(downloads).toEqual([])
+  })
+
+  test('two tabs receive native additions, renames and deletions, and queued concurrent saves retain both presets', async ({
+    page,
+    context,
+  }) => {
+    const other = await context.newPage()
+    await other.goto('./')
+    const firstDialog = await openImageExport(page)
+    const secondDialog = await openImageExport(other)
+    const first = presetControls(firstDialog)
+    const second = presetControls(secondDialog)
+    const secondSelect = second.getByLabel('保存したプリセット')
+    const secondName = second.getByLabel('プリセット名', { exact: true })
+
+    await firstDialog.getByLabel('出力倍率').selectOption('0.5')
+    await saveNew(first, 'Team preview')
+    await expect(secondSelect.locator('option')).toHaveCount(2)
+    await expect(secondSelect).toHaveValue('')
+    await secondSelect.selectOption({ label: 'Team preview' })
+    await expect(secondName).toHaveValue('Team preview')
+
+    await first
+      .getByLabel('プリセット名', { exact: true })
+      .fill('Renamed preview')
+    await first.getByRole('button', { name: '上書き保存', exact: true }).click()
+    await expect(secondSelect.locator('option:checked')).toHaveText(
+      'Renamed preview',
+    )
+    await expect(secondName).toHaveValue('Renamed preview')
+    await expect(secondDialog.getByLabel('出力倍率')).toHaveValue('1')
+
+    // Updating settings in the receiving tab must retain the external rename.
+    await secondDialog.getByLabel('出力倍率').selectOption('2')
+    await second
+      .getByRole('button', { name: '上書き保存', exact: true })
+      .click()
+    await expect
+      .poll(async () => (await readLibrary(page)).presets)
+      .toEqual([
+        expect.objectContaining({
+          name: 'Renamed preview',
+          settings: {
+            kind: 'image',
+            format: 'png',
+            quality: 0.92,
+            multiplier: 2,
+          },
+        }),
+      ])
+    await expect(first.getByLabel('プリセット名', { exact: true })).toHaveValue(
+      'Renamed preview',
+    )
+    await expect(firstDialog.getByLabel('出力倍率')).toHaveValue('0.5')
+
+    page.once('dialog', (confirmation) => confirmation.accept())
+    await first.getByRole('button', { name: '削除', exact: true }).click()
+    await expect(secondSelect.locator('option')).toHaveCount(1)
+    await expect(secondSelect).toHaveValue('')
+    await expect(secondName).toHaveValue('')
+    await expect(
+      second.getByRole('button', { name: '適用', exact: true }),
+    ).toBeDisabled()
+    await expect(
+      second.getByRole('button', { name: '上書き保存', exact: true }),
+    ).toBeDisabled()
+
+    await first.getByLabel('プリセット名', { exact: true }).fill('First tab')
+    await secondName.fill('Second tab')
+    const lockName = `${storageKey}:write`
+    // Hold the actual browser lock so both UI saves queue before either writes.
+    // Their native storage events and post-save refreshes must converge afterward.
+    await page.evaluate(`(async () => {
+      if (!navigator.locks) throw new Error('Web Locks are required for this test')
+      await new Promise((acquired) => {
+        navigator.locks.request(${JSON.stringify(lockName)}, () => {
+          acquired()
+          return new Promise((release) => { globalThis.releasePresetTestLock = release })
+        })
+      })
+    })()`)
+    try {
+      await Promise.all([
+        first.getByRole('button', { name: '新規保存', exact: true }).click(),
+        second.getByRole('button', { name: '新規保存', exact: true }).click(),
+      ])
+      await expect
+        .poll(() =>
+          page.evaluate<number>(`(async () => {
+        const state = await navigator.locks.query()
+        return state.pending.filter((lock) => lock.name === ${JSON.stringify(lockName)}).length
+      })()`),
+        )
+        .toBe(2)
+      await expect(
+        first.getByRole('button', { name: '新規保存', exact: true }),
+      ).toBeDisabled()
+      await expect(
+        second.getByRole('button', { name: '新規保存', exact: true }),
+      ).toBeDisabled()
+    } finally {
+      await page.evaluate('globalThis.releasePresetTestLock()')
+    }
+    await expect(
+      first.getByLabel('保存したプリセット').locator('option'),
+    ).toHaveCount(3)
+    await expect(secondSelect.locator('option')).toHaveCount(3)
+    await expect(
+      first.getByLabel('保存したプリセット').locator('option:checked'),
+    ).toHaveText('First tab')
+    await expect(secondSelect.locator('option:checked')).toHaveText(
+      'Second tab',
+    )
+    const saved = (await readLibrary(page)).presets
+    expect(saved.map(({ name }) => name).sort()).toEqual([
+      'First tab',
+      'Second tab',
+    ])
+    expect(
+      saved.find(({ name }) => name === 'First tab')?.settings.multiplier,
+    ).toBe(0.5)
+    expect(
+      saved.find(({ name }) => name === 'Second tab')?.settings.multiplier,
+    ).toBe(2)
+    await other.close()
   })
 })
