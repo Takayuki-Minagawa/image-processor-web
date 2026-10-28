@@ -6325,6 +6325,7 @@ export default function EditorApplication() {
             {pdfCopy(locale).exportSettings}
           </button>
           <ExportImageForm
+            locale={locale}
             settings={exportSettings}
             onChange={setExportSettings}
             documentSize={documentSize}

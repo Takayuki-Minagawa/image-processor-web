@@ -26,6 +26,7 @@ function show(
 ) {
   return render(
     <ExportImageForm
+      locale="en"
       settings={settings}
       onChange={vi.fn()}
       documentSize={{ width: 320, height: 240 }}

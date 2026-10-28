@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react'
+import type { AppLocale } from '../uiPreferences'
+import ExportPresetControls from './ExportPresetControls'
 import { Copy, Download } from 'lucide-react'
 import type { ExportImageFormat } from '../editor/fabricEngine'
 import type { EditorUiCopy } from '../i18n'
@@ -17,6 +19,7 @@ export interface ExportImageSettings {
 export type ExportImageAction = 'download' | 'clipboard'
 
 interface Props {
+  locale: AppLocale
   settings: ExportImageSettings
   onChange: (settings: ExportImageSettings) => void
   documentSize: { width: number; height: number }
@@ -28,6 +31,7 @@ interface Props {
 }
 
 export default function ExportImageForm({
+  locale,
   settings,
   onChange,
   documentSize,
@@ -85,6 +89,24 @@ export default function ExportImageForm({
         void run('download')
       }}
     >
+      <ExportPresetControls
+        locale={locale}
+        settings={{
+          kind: 'image',
+          format: settings.format,
+          quality: settings.quality,
+          multiplier: settings.multiplier,
+        }}
+        disabled={disabled}
+        onApply={(preset) => {
+          if (preset.kind !== 'image') return
+          change({
+            format: preset.format,
+            quality: preset.quality,
+            multiplier: preset.multiplier,
+          })
+        }}
+      />
       <fieldset className="format-options" disabled={disabled}>
         <legend>{ui.fileFormat}</legend>
         {(['png', 'jpeg', 'webp', 'svg'] as const).map((format) => (

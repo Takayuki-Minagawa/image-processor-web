@@ -113,6 +113,10 @@ PDFは1 page 1 raster XObjectのPDF 1.7で、物理boxと任意crop markを保�
 
 release前のviewer / browser確認は[PDF / GIF / video書き出し互換確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)を使う。
 
+## 出力設定プリセット
+
+通常画像・SVGと画像PDFの設定を名前付きで保存・明示適用・更新・削除できる。プリセットはブラウザ内の利用者設定とし、ページ範囲・選択ID・原稿寸法を保存しない。50件上限、型・値検証、保存不可時の一時保存、Web Locks対応時の多タブ更新を扱う。詳細は[出力設定プリセット](./OUTPUT_PRESETS.md)を参照。
+
 ## SVG原寸入力
 
 「開く」でSVGのpx／物理寸法を確認し、新規文書またはページ追加へ取り込む。寸法が不足する場合はviewBoxからの推定を明示して確認を必須とする。CSSの96 px/in、viewBox原点、preserveAspectRatio、透明背景を保持し、既存の素材配置は維持する。PDFと共通のページ確定処理で容量検証、失敗・取消、追加のUndo / Redo、保存・自動保存を扱う。詳細は[SVG原寸入力仕様](./SVG_IMPORT.md)を参照。
