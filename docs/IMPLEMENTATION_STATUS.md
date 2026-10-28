@@ -8,7 +8,7 @@ Pixelweaveは、local-first画像編集MVPと機能拡張P1〜P7を維持した�
 
 ## 現在利用できるデザインフロー
 
-1. 用途別presetまたはcustom寸法からデザインを作る。PDFの選択ページを原寸の背景画像として開くこともできる。
+1. 用途別presetまたはcustom寸法からデザインを作る。PDFの選択ページを原寸の背景画像として開くこともできる。SVGは「開く」から元のサイズでベクターページを作成できる。
 2. pageを追加・複製・削除・並べ替え、pageごとに背景とdurationを設定する。
 3. 図形、icon、frame、grid、text、template、chart、tableを通常レイヤーとして挿入する。
 4. group、clip frame、selection由来のlayer mask、magic resizeを編集transactionとして適用する。
@@ -112,6 +112,10 @@ timeline evaluatorはrendererとwall clockから独立し、任意時刻のpage 
 PDFは1 page 1 raster XObjectのPDF 1.7で、物理boxと任意crop markを保持する。画像の既定圧縮は可逆Flateで、JPEGを選ぶ場合は品質を指定する。出力前の寸法・ページ数・DPI確認と64 MP総画素／128 MiB圧縮画像データの上限を持つ。GIFはfull-canvas indexed GIF89aで、UIはRGB332固定palette、最長辺480px、最大120 frameに制限する。videoはCanvas streamをbrowserの`MediaRecorder`へ渡し、native MP4 / WebM containerが利用できなければ同じframe列をGIFへfallbackする。WebCodecsのcodec / muxer capability modelは将来の決定論的pipeline用であり、現在のvideo記録とは別境界である。
 
 release前のviewer / browser確認は[PDF / GIF / video書き出し互換確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)を使う。
+
+## SVG原寸入力
+
+「開く」でSVGのpx／物理寸法を確認し、新規文書またはページ追加へ取り込む。寸法が不足する場合はviewBoxからの推定を明示して確認を必須とする。CSSの96 px/in、viewBox原点、preserveAspectRatio、透明背景を保持し、既存の素材配置は維持する。PDFと共通のページ確定処理で容量検証、失敗・取消、追加のUndo / Redo、保存・自動保存を扱う。詳細は[SVG原寸入力仕様](./SVG_IMPORT.md)を参照。
 
 ## 既存P1〜P7の維持
 

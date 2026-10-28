@@ -363,6 +363,13 @@ export interface ImportImageOptions {
   changeReason?: EditorChangeReason
 }
 
+export interface ImportSvgOptions {
+  /** Native placement retains the normalized SVG viewport coordinates. */
+  placement?: 'fit' | 'native'
+  /** Cancels parsing before any objects are added to the document. */
+  signal?: AbortSignal
+}
+
 export interface CanvasDropTarget {
   point: { x: number; y: number }
   gridCellId?: string
@@ -1194,40 +1201,70 @@ export class FabricEditorEngine {
    * Imports SVG that has already crossed the svgSafety sanitizer boundary.
    * The parsed objects are grouped into one editable vector layer.
    */
-  public async importSvg(sanitizedSvg: string, name = 'SVG'): Promise<string> {
+  public async importSvg(
+    sanitizedSvg: string,
+    name = 'SVG',
+    options: ImportSvgOptions = {},
+  ): Promise<string> {
     this.assertUsable()
-    const parsed = await loadSVGFromString(sanitizedSvg)
-    this.assertUsable()
-    const objects = parsed.objects.filter(
-      (object): object is FabricObject => object instanceof FabricObject,
-    )
-    if (objects.length === 0) {
-      throw new TypeError('The SVG does not contain any supported objects.')
-    }
-
+    const preparedObjects = new Set<FabricObject>()
+    let parsingFailed = false
     let grouped: FabricObject | undefined
     try {
-      grouped = util.groupSVGElements(objects, parsed.options)
+      options.signal?.throwIfAborted()
+      const parsed = await loadSVGFromString(
+        sanitizedSvg,
+        (_element, object) => {
+          // Fabric parses siblings concurrently. A sibling may finish after
+          // another has rejected, so release these late results as well.
+          if (parsingFailed) this.disposeResources([object])
+          else preparedObjects.add(object)
+        },
+        { signal: options.signal },
+      )
+      options.signal?.throwIfAborted()
+      this.assertUsable()
+      const objects = parsed.objects.filter(
+        (object): object is FabricObject => object instanceof FabricObject,
+      )
+      if (objects.length === 0) {
+        throw new TypeError('The SVG does not contain any supported objects.')
+      }
+      grouped = util.groupSVGElements(
+        objects,
+        options.placement === 'native' ? undefined : parsed.options,
+      )
+      if (options.placement === 'native') {
+        const preserveOrigin = (object: FabricObject): void => {
+          this.normalizeObjectOrigin(object, true)
+          if (object instanceof Group)
+            object.getObjects().forEach(preserveOrigin)
+        }
+        preserveOrigin(grouped)
+      }
       const editorObject = grouped as EditorObject
       editorObject.editorKind = 'svg'
       this.initializeEditorObject(
         editorObject,
         this.uniqueLayerName(name.trim() || 'SVG'),
       )
-      const bounds = grouped.getBoundingRect()
-      const scale = Math.min(
-        1,
-        (this.documentWidth * 0.82) / Math.max(1, bounds.width),
-        (this.documentHeight * 0.82) / Math.max(1, bounds.height),
-      )
-      grouped.set({
-        ...TOP_LEFT_ORIGIN,
-        left: (this.documentWidth - bounds.width * scale) / 2,
-        top: (this.documentHeight - bounds.height * scale) / 2,
-        scaleX: grouped.scaleX * scale,
-        scaleY: grouped.scaleY * scale,
-      })
+      if (options.placement !== 'native') {
+        const bounds = grouped.getBoundingRect()
+        const scale = Math.min(
+          1,
+          (this.documentWidth * 0.82) / Math.max(1, bounds.width),
+          (this.documentHeight * 0.82) / Math.max(1, bounds.height),
+        )
+        grouped.set({
+          ...TOP_LEFT_ORIGIN,
+          left: (this.documentWidth - bounds.width * scale) / 2,
+          top: (this.documentHeight - bounds.height * scale) / 2,
+          scaleX: grouped.scaleX * scale,
+          scaleY: grouped.scaleY * scale,
+        })
+      }
       grouped.setCoords()
+      options.signal?.throwIfAborted()
       this.mutate('svg-import', () => {
         this.canvas.add(grouped!)
         this.canvas.setActiveObject(grouped!)
@@ -1235,10 +1272,12 @@ export class FabricEditorEngine {
       this.emitStatus('SVGをベクターレイヤーとして読み込みました。', 'success')
       return this.requireEditorId(editorObject)
     } catch (error) {
+      parsingFailed = true
       this.disposeResources(
-        grouped ? [grouped] : objects,
+        grouped ? [grouped] : preparedObjects,
         this.canvas.getObjects(),
       )
+      options.signal?.throwIfAborted()
       throw error
     }
   }

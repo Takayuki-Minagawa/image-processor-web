@@ -5,6 +5,7 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 ## 主な機能
 
 - PNG / JPEG / WebP / SVGのドラッグ&ドロップ、ファイル選択、クリップボード貼り付け
+- SVGの原寸ページ作成（px・mm等の絶対単位、viewBox推定の明示確認）、既存文書へのページ追加
 - PDFのファイル選択・ドラッグ&ドロップ、ページ範囲・DPIを指定した原寸の背景画像取込、新規文書または既存文書へのページ追加
 - 選択、移動、拡大縮小、回転、パン、ズーム、crop、整列、等間隔分布、ルーラーからドラッグできるガイド、スナップ
 - ブラシ、消しゴム、矩形、楕円、テキスト、縁取り、グラデーション、シャドウ、字間・行間、円弧テキスト
@@ -63,6 +64,12 @@ descriptorにはversion、bytes、SHA-256 `309c8469258dda742793dce0ebea8e6dd3931
 現在の保存形式は`.pwx.json` schema version 4です。ドキュメントは複数ページを持ち、各ページにpixel寸法、任意のmm仕上がり寸法と作成時DPI、Fabric.js payload、canonicalレイヤーツリー、背景、ガイド、スナップ許容距離、lossless符号化した8bit選択・レイヤーマスク、任意のアニメーションtimelineを保存します。canonicalレイヤーツリーとrenderer payloadが矛盾するfileは、canvas復元前に拒否します。
 
 version 1・2の単一Canvasは1ページのドキュメントへ、version 3の複数ページは静止timelineを補ってversion 4へ移行します。次回保存時はversion 4になります。serializerは互換aliasを重複出力しません。未知version、寸法不一致、過大な画像・レイヤー・マスク・timelineは、現在のドキュメントを変更せず明示エラーにします。
+
+### SVGの原寸で制作
+
+「開く」からSVGを選ぶと、ページのpx寸法と元の物理寸法を確認して、新規文書または現在の文書へのページ追加ができます。mm・cm・in・pt等はCSSの96 px/inで解釈し、元のmmを保存します。width・heightが揃わずviewBoxから寸法を推定する場合は、確認欄の選択が必要です。viewBoxの原点・余白・縦横比を保持し、ベクターとして取り込みます。アウトライン化された文字は文字として編集できません。
+
+既存キャンバスへ素材として配置する場合は、画像追加・ドラッグ＆ドロップ・貼り付けを使います。こちらは従来どおりキャンバスに収まるように配置します。対応範囲と検証は[SVG原寸入力仕様](./docs/SVG_IMPORT.md)を参照してください。
 
 ### PDFを背景にした制作
 
@@ -145,6 +152,7 @@ typescript-eslint向けには`@typescript/typescript6`を`typescript` aliasと�
 
 - [実装状況](./docs/IMPLEMENTATION_STATUS.md)
 - [Architecture Decision Records](./docs/adr/)
+- [SVG原寸入力仕様と検証境界](./docs/SVG_IMPORT.md)
 - [PDF入出力仕様と検証境界](./docs/PDF_IO.md)
 
 ## 既知の制限

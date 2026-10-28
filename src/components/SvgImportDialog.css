@@ -1,0 +1,22 @@
+.svg-import-form fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.svg-import-form label {
+  display: grid;
+  gap: 6px;
+}
+.svg-import-form .svg-inferred-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.svg-import-form .svg-inferred-confirmation input {
+  width: auto;
+}
+.svg-file-name {
+  overflow-wrap: anywhere;
+}
