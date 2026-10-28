@@ -18,6 +18,63 @@ const svg = (
 afterEach(() => vi.restoreAllMocks())
 
 describe('native SVG page adapter', () => {
+  it('keeps basic group selectors scoped to authored groups', async () => {
+    const geometry = prepareSvgNativeImport(
+      svg(
+        'width="200" height="100" viewBox="0 0 100 100"',
+        '<style>g {fill: red; opacity: .5; transform: translate(25, 0)}</style><rect x="10" y="20" width="20" height="10" stroke-width="0"/><g><rect x="10" y="20" width="20" height="10" stroke-width="0"/></g>',
+      ),
+    )
+    const page = await createSvgDesignPage(geometry)
+    const engine = new FabricEditorEngine(document.createElement('canvas'))
+    try {
+      await engine.restore(page.snapshot)
+      const group = engine.getCanvas().getObjects()[0] as Group
+      const [direct, authoredGroupChild] = group.getObjects()
+      expect(direct.fill).toBe('rgb(0,0,0)')
+      expect(direct.opacity).toBe(1)
+      expect(direct.calcTransformMatrix()).toEqual([1, 0, 0, 1, 70, 25])
+      expect(authoredGroupChild.fill).toBe('red')
+      expect(authoredGroupChild.opacity).toBe(0.5)
+      expect(authoredGroupChild.calcTransformMatrix()).toEqual([
+        1, 0, 0, 1, 95, 25,
+      ])
+    } finally {
+      await engine.dispose()
+    }
+  })
+
+  it('applies root attributes and inline transforms outside the viewport mapping', async () => {
+    const geometry = prepareSvgNativeImport(
+      svg(
+        'width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="none" transform="scale(9)" fill="blue" style="transform: matrix(2,0,0,2,10,5)"',
+      ),
+    )
+    const page = await createSvgDesignPage(geometry)
+    expect(page.snapshot.json.objects).toEqual([
+      expect.objectContaining({
+        fill: 'blue',
+        left: 50,
+        top: 45,
+        scaleX: 4,
+        scaleY: 2,
+      }),
+    ])
+  })
+
+  it('protects the viewport mapping from Fabric case-insensitive CSS selector matching', async () => {
+    const geometry = prepareSvgNativeImport(
+      svg(
+        'id="DRAWING" width="200" height="100" viewBox="0 0 100 100"',
+        '<style>#drawing {transform: translate(25, 0)}</style><rect x="10" y="20" width="20" height="10" stroke-width="0"/>',
+      ),
+    )
+    const page = await createSvgDesignPage(geometry)
+    expect(page.snapshot.json.objects).toEqual([
+      expect.objectContaining({ left: 60, top: 20, scaleX: 1, scaleY: 1 }),
+    ])
+  })
+
   it('creates an editable physical-size page and preserves it through project serialization', async () => {
     const geometry = prepareSvgNativeImport(
       svg('width="210mm" height="297mm" viewBox="0 0 210 297"'),

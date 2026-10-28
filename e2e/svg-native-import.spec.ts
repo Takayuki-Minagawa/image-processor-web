@@ -4,6 +4,7 @@ import type { ProjectDocument } from '../src/editor/types'
 // Artificial SVGs keep the coordinate and unit expectations independently
 // readable; no external files, fonts, raster images, or network resources.
 const physicalSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="25.4mm" height="50.8mm" viewBox="-10 -20 96 192">
+  <style>g { opacity: 0.5; fill: #000000; }</style>
   <rect x="0" y="0" width="20" height="30" fill="#ff0000"/>
   <rect x="50" y="100" width="10" height="20" fill="#0000ff"/>
 </svg>`
@@ -11,7 +12,7 @@ const pixelSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="320px" height="
   <rect x="40" y="30" width="80" height="60" fill="#00aa00"/>
 </svg>`
 const materialSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000">
-  <rect width="1000" height="1000" fill="#ff0000"/>
+  <rect width="1000" height="1000" fill="#ff0000" stroke-width="0"/>
 </svg>`
 
 const downloadBytes = async (download: Download): Promise<Buffer> => {
@@ -279,6 +280,10 @@ test.describe('SVG pages at their original dimensions', () => {
       .getByRole('list', { name: 'レイヤー' })
       .getByRole('listitem')
     await expect(rows).toHaveCount(1)
+    await expect(page.locator('.app-shell')).toHaveAttribute(
+      'aria-busy',
+      'false',
+    )
     await expect(page.getByRole('dialog')).toHaveCount(0)
     const transfer = await page.evaluateHandle(`(() => {
       const data = new DataTransfer()
@@ -295,17 +300,23 @@ test.describe('SVG pages at their original dimensions', () => {
       await transfer.dispose()
     }
     await expect(rows).toHaveCount(2)
-    await page.locator('body').evaluate(`(element) => {
+    // Synthetic clipboard dispatch bypasses browser inert handling. Wait for
+    // the preceding import's finally/endBusy, as a real user would have to.
+    await expect(page.locator('.app-shell')).toHaveAttribute(
+      'aria-busy',
+      'false',
+    )
+    await page.evaluate(`(() => {
       const clipboardData = new DataTransfer()
       clipboardData.setData('image/svg+xml', ${JSON.stringify(materialSvg)})
-      element.dispatchEvent(
+      document.body.dispatchEvent(
         new ClipboardEvent('paste', {
           clipboardData,
           bubbles: true,
           cancelable: true,
         }),
       )
-    }`)
+    })()`)
     await expect(rows).toHaveCount(3)
     await expect(page.getByRole('dialog')).toHaveCount(0)
     const saved = await saveProject(page)

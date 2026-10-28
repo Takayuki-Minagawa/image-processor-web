@@ -22,7 +22,7 @@ export interface SvgNativeGeometry {
 }
 
 export class SvgNativeImportError extends Error {
-  readonly code: 'svg-css-size' | 'svg-viewport'
+  readonly code: 'svg-css-size' | 'svg-viewport' | 'svg-transform'
 
   constructor(code: SvgNativeImportError['code'], message: string) {
     super(message)
@@ -103,6 +103,106 @@ const normalizedCss = (source: string): string =>
 const CSS_SIZE_PROPERTY =
   /(?:^|[;{])\s*(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|aspect-ratio)\s*:/iu
 
+type Matrix = [number, number, number, number, number, number]
+const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0]
+const multiply = (a: Matrix, b: Matrix): Matrix => [
+  a[0] * b[0] + a[2] * b[1],
+  a[1] * b[0] + a[3] * b[1],
+  a[0] * b[2] + a[2] * b[3],
+  a[1] * b[2] + a[3] * b[3],
+  a[0] * b[4] + a[2] * b[5] + a[4],
+  a[1] * b[4] + a[3] * b[5] + a[5],
+]
+const invalidTransform = (): never => {
+  throw new SvgNativeImportError(
+    'svg-transform',
+    'Use numeric SVG transforms on the root. Stylesheet transforms targeting the root are unsupported.',
+  )
+}
+
+const parseTransform = (source: string): Matrix => {
+  if (!source.trim() || source.trim() === 'none') return [...IDENTITY]
+  const operations = /([a-zA-Z]+)\s*\(([^()]*)\)/gu
+  const numbers = new RegExp(
+    `^\\s*${NUMBER}(?:${SEPARATOR}${NUMBER})*\\s*$`,
+    'iu',
+  )
+  let matrix: Matrix = [...IDENTITY]
+  let end = 0
+  for (const match of source.matchAll(operations)) {
+    if (!/^\s*,?\s*$/u.test(source.slice(end, match.index))) invalidTransform()
+    if (!numbers.test(match[2])) invalidTransform()
+    const args = match[2]
+      .trim()
+      .split(/[\s,]+/u)
+      .map(Number)
+    if (!args.every(Number.isFinite)) invalidTransform()
+    const [a, b, c] = args
+    let next: Matrix
+    if (match[1] === 'matrix' && args.length === 6) next = args as Matrix
+    else if (match[1] === 'translate' && [1, 2].includes(args.length))
+      next = [1, 0, 0, 1, a, b ?? 0]
+    else if (match[1] === 'scale' && [1, 2].includes(args.length))
+      next = [a, 0, 0, b ?? a, 0, 0]
+    else if (match[1] === 'rotate' && [1, 3].includes(args.length)) {
+      const angle = (a * Math.PI) / 180
+      const cosine = Math.cos(angle)
+      const sine = Math.sin(angle)
+      const x = b ?? 0
+      const y = c ?? 0
+      next = [
+        cosine,
+        sine,
+        -sine,
+        cosine,
+        x - cosine * x + sine * y,
+        y - sine * x - cosine * y,
+      ]
+    } else if (['skewX', 'skewY'].includes(match[1]) && args.length === 1) {
+      const tangent = Math.tan((a * Math.PI) / 180)
+      next =
+        match[1] === 'skewX'
+          ? [1, 0, tangent, 1, 0, 0]
+          : [1, tangent, 0, 1, 0, 0]
+    } else return invalidTransform()
+    matrix = multiply(matrix, next)
+    if (!matrix.every(Number.isFinite)) invalidTransform()
+    end = match.index + match[0].length
+  }
+  if (end === 0 || source.slice(end).trim()) invalidTransform()
+  return matrix
+}
+
+const readRootTransform = (root: SVGSVGElement): Matrix => {
+  const transformDeclaration = /(?:^|;)\s*transform\s*:/iu
+  for (const style of root.querySelectorAll('style')) {
+    const css = normalizedCss(style.textContent ?? '')
+    if (!/(?:^|[;{])\s*transform\s*:/iu.test(css)) continue
+    // Nested cascades and conditional rules require a CSS engine. Basic
+    // selectors remain supported, but uncertain root transforms fail explicitly.
+    if (/@[a-z-]+/iu.test(css)) invalidTransform()
+    for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
+      if (!transformDeclaration.test(rule[2])) continue
+      try {
+        if (root.matches(rule[1].trim())) invalidTransform()
+      } catch {
+        invalidTransform()
+      }
+    }
+  }
+  const declarations = normalizedCss(root.getAttribute('style') ?? '').split(
+    ';',
+  )
+  const transforms = declarations.filter((value) =>
+    /^\s*transform\s*:/iu.test(value),
+  )
+  const important = transforms.filter((value) => /!important\s*$/iu.test(value))
+  const inline = (important.at(-1) ?? transforms.at(-1))
+    ?.replace(/^\s*transform\s*:/iu, '')
+    .replace(/\s*!important\s*$/iu, '')
+  return parseTransform(inline ?? root.getAttribute('transform') ?? '')
+}
+
 const readRootSizes = (root: SVGSVGElement): [Length, Length] => {
   // Selector-based sizing requires a full CSS cascade/environment. Do not label
   // attribute dimensions as original physical size when a stylesheet can win.
@@ -137,7 +237,7 @@ const viewportMatrix = (
   width: number,
   height: number,
   preserveAspectRatio: string | null,
-): string => {
+): Matrix => {
   const parts = (preserveAspectRatio?.trim() || 'xMidYMid meet').split(/\s+/u)
   const [align, fit = 'meet'] = parts
   if (
@@ -159,7 +259,7 @@ const viewportMatrix = (
   if (![sx, sy, tx, ty].every(Number.isFinite)) {
     return invalidViewport('The SVG viewport transform is not finite.')
   }
-  return `matrix(${sx} 0 0 ${sy} ${tx} ${ty})`
+  return [sx, 0, 0, sy, tx, ty]
 }
 
 /**
@@ -200,6 +300,7 @@ export function prepareSvgNativeImport(source: string): SvgNativeGeometry {
 
   const [widthLength, heightLength] = readRootSizes(root)
   const viewBox = parseViewBox(root.getAttribute('viewBox'))
+  const rootTransform = readRootTransform(root)
   const fixedWidth =
     widthLength.kind === 'fixed' ? widthLength.pixels : undefined
   const fixedHeight =
@@ -254,19 +355,26 @@ export function prepareSvgNativeImport(source: string): SvgNativeGeometry {
   root.style.removeProperty('height')
   if (!root.getAttribute('style')?.trim()) root.removeAttribute('style')
 
+  const matrix = multiply(
+    rootTransform,
+    viewBox
+      ? viewportMatrix(
+          viewBox,
+          viewportWidth,
+          viewportHeight,
+          root.getAttribute('preserveAspectRatio'),
+        )
+      : IDENTITY,
+  )
+  if (!matrix.every(Number.isFinite)) invalidTransform()
+  // Keep the authored element tree unchanged: a synthetic <g> would match
+  // existing g selectors and alter colors, opacity or even this transform.
+  root.setAttribute('transform', `matrix(${matrix.join(' ')})`)
+  // Always fix the inline value as well: Fabric matches id/class selectors
+  // case-insensitively and can otherwise apply a rule that does not match the
+  // actual SVG root. Commas make this matrix valid in CSS and SVG syntax.
+  root.style.setProperty('transform', `matrix(${matrix.join(', ')})`)
   if (viewBox) {
-    const group = document.createElementNS(SVG_NS, 'g')
-    group.setAttribute(
-      'transform',
-      viewportMatrix(
-        viewBox,
-        viewportWidth,
-        viewportHeight,
-        root.getAttribute('preserveAspectRatio'),
-      ),
-    )
-    while (root.firstChild) group.appendChild(root.firstChild)
-    root.appendChild(group)
     root.removeAttribute('viewBox')
     root.removeAttribute('preserveAspectRatio')
   }

@@ -92,7 +92,7 @@ export default function SvgImportDialog({
           </p>
           {geometry.physicalSize ? (
             <p>
-              {copy.physical}:{' '}
+              {geometry.inferred ? copy.inferredPhysical : copy.physical}:{' '}
               {Number(geometry.physicalSize.widthMm.toFixed(4))} ×{' '}
               {Number(geometry.physicalSize.heightMm.toFixed(4))} mm
             </p>

@@ -143,9 +143,116 @@ describe('prepareSvgNativeImport', () => {
     const root = rootOf(result.source)
     expect(root.hasAttribute('viewBox')).toBe(false)
     expect(root.hasAttribute('preserveAspectRatio')).toBe(false)
-    expect(root.firstElementChild?.getAttribute('transform')).toBe(matrix)
+    expect(root.getAttribute('transform')).toBe(matrix)
+    expect(root.querySelector('g')).toBeNull()
     expect(root.querySelector('rect')?.getAttribute('width')).toBe('10')
   })
+
+  it.each([
+    ['translate(10 20) scale(2)', 'matrix(4 0 0 4 10 -80)'],
+    ['matrix(1,0,0,1,10,20)', 'matrix(2 0 0 2 10 -30)'],
+    ['none', 'matrix(2 0 0 2 0 -50)'],
+  ])(
+    'composes root transform %s before the viewport mapping',
+    (transform, expected) => {
+      const result = prepareSvgNativeImport(
+        svg(
+          `width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" transform="${transform}"`,
+        ),
+      )
+      expect(rootOf(result.source).getAttribute('transform')).toBe(expected)
+    },
+  )
+
+  it('keeps pivot rotation and skew operations numerically correct', () => {
+    const result = prepareSvgNativeImport(
+      svg(
+        'width="100" height="100" transform="rotate(90 10 20) skewX(45) skewY(45)"',
+      ),
+    )
+    const values = rootOf(result.source)
+      .getAttribute('transform')!
+      .slice(7, -1)
+      .split(' ')
+      .map(Number)
+    const expected = [-1, 2, -1, 1, 30, 10]
+    values.forEach((value, index) => expect(value).toBeCloseTo(expected[index]))
+  })
+
+  it('preserves inline transform precedence and writes a CSS-valid composed matrix', () => {
+    const result = prepareSvgNativeImport(
+      svg(
+        'width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="none" transform="scale(9)" style="transform: matrix(1,0,0,1,10,20) !important; fill: blue"',
+      ),
+    )
+    const root = rootOf(result.source) as unknown as SVGSVGElement
+    expect(root.getAttribute('transform')).toBe('matrix(2 0 0 1 10 20)')
+    expect(root.style.transform).toBe('matrix(2, 0, 0, 1, 10, 20)')
+    expect(root.style.fill).toBe('blue')
+    const none = prepareSvgNativeImport(
+      svg(
+        'width="200" height="100" viewBox="0 0 100 100" transform="scale(9)" style="transform: none"',
+      ),
+    )
+    expect(rootOf(none.source).getAttribute('transform')).toBe(
+      'matrix(1 0 0 1 50 0)',
+    )
+  })
+
+  it.each([
+    ['transform: scale(2) !important; transform: scale(3)', 2],
+    ['transform: scale(2); transform: scale(3) !important', 3],
+    ['transform: scale(2) !important; transform: scale(3) !important', 3],
+  ])('honors inline declaration importance: %s', (style, scale) => {
+    const result = prepareSvgNativeImport(
+      svg(`width="200" height="100" viewBox="0 0 100 100" style="${style}"`),
+    )
+    expect(rootOf(result.source).getAttribute('transform')).toBe(
+      `matrix(${scale} 0 0 ${scale} ${50 * scale} 0)`,
+    )
+  })
+
+  it.each([
+    '#drawing { transform: scale(2) }',
+    '.drawing { transform: scale(2) }',
+    'svg { transform: scale(2) }',
+    '#drawing { trans\\66 orm: scale(2) }',
+    '@media screen { g { transform: scale(2) } }',
+    'unknown|svg { transform: scale(2) }',
+  ])(
+    'rejects stylesheet transforms that target the root or cannot be resolved: %s',
+    (css) => {
+      expect(() =>
+        prepareSvgNativeImport(
+          svg(
+            'id="drawing" class="drawing" width="200" height="100" viewBox="0 0 100 100"',
+            `<style>${css}</style><rect width="10" height="10"/>`,
+          ),
+        ),
+      ).toThrow(expect.objectContaining({ code: 'svg-transform' }))
+    },
+  )
+
+  it.each([
+    'translate(10px, 20px)',
+    'rotate(45deg)',
+    'scale(2) bad',
+    'matrix(1 2 3)',
+    'scale(1e999)',
+    'rotate(20 1)',
+    'var(--transform)',
+  ])(
+    'rejects an unsupported root transform instead of dropping the viewport mapping: %s',
+    (transform) => {
+      expect(() =>
+        prepareSvgNativeImport(
+          svg(
+            `width="200" height="100" viewBox="0 0 100 100" transform="${transform}"`,
+          ),
+        ),
+      ).toThrow(expect.objectContaining({ code: 'svg-transform' }))
+    },
+  )
 
   it.each([
     'svg { width: 20mm }',

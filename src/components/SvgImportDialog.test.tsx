@@ -74,12 +74,17 @@ describe('SVG original-size import dialog', () => {
     mock.prepare.mockReturnValue({
       ...mock.prepare(),
       inferred: true,
-      physicalSize: undefined,
     })
     const { onImport } = setup()
     const checkbox = await screen.findByLabelText(
       'I confirm importing at the inferred size',
     )
+    expect(
+      screen.getByText('Inferred physical size: 25.4 × 12.7 mm'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText('Original physical size: 25.4 × 12.7 mm'),
+    ).not.toBeInTheDocument()
     const submit = screen.getByRole('button', { name: 'Import SVG' })
     expect(submit).toBeDisabled()
     fireEvent.submit(submit.closest('form')!)

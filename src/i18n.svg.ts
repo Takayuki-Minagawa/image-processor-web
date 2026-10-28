@@ -7,6 +7,7 @@ const ja = {
   loading: 'SVGを解析しています…',
   dimensions: 'ページサイズ',
   physical: '元の物理サイズ',
+  inferredPhysical: '推定した物理サイズ',
   inferred:
     '寸法が確定していないため、viewBoxと指定寸法から推定したサイズです。',
   confirmInferred: '推定サイズで取り込むことを確認しました',
@@ -45,6 +46,8 @@ const ja = {
       'このCSSによるSVGのサイズ指定には対応していません。ルートのwidth・heightに絶対寸法を指定してください。',
     'svg-viewport':
       'SVGの表示領域を確定できません。width・heightまたはviewBoxを確認してください。',
+    'svg-transform':
+      'ルートSVGの変換を確定できません。ルートに適用されるCSS transformを除き、transform属性にSVG形式の数値変換を指定してください。',
   },
 }
 const en: typeof ja = {
@@ -54,6 +57,7 @@ const en: typeof ja = {
   loading: 'Reading SVG…',
   dimensions: 'Page dimensions',
   physical: 'Original physical size',
+  inferredPhysical: 'Inferred physical size',
   inferred:
     'The dimensions are not explicit. This size is inferred from the viewBox and specified dimensions.',
   confirmInferred: 'I confirm importing at the inferred size',
@@ -91,6 +95,8 @@ const en: typeof ja = {
       'This CSS sizing is unsupported. Set absolute width and height on the root SVG.',
     'svg-viewport':
       'Could not determine the SVG viewport. Check width, height and viewBox.',
+    'svg-transform':
+      'Could not determine the root SVG transform. Remove stylesheet transforms targeting the root and use numeric SVG transform syntax in its transform attribute.',
   },
 }
 
