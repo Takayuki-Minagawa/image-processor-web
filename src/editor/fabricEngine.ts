@@ -4194,6 +4194,58 @@ export class FabricEditorEngine {
     return queued
   }
 
+  /** Capture a bounded preview without status, document, or history changes. */
+  public async renderPreview(
+    maxDimension: number,
+    signal: AbortSignal,
+  ): Promise<{ dataUrl: string; width: number; height: number }> {
+    this.assertUsable()
+    signal.throwIfAborted()
+    if (!Number.isFinite(maxDimension) || maxDimension < 1) {
+      throw new RangeError('Preview size must be a positive finite number.')
+    }
+    const limit = Math.min(1_600, Math.floor(maxDimension))
+    await this.waitForAdjustmentLayers()
+    signal.throwIfAborted()
+    const multiplier = Math.min(
+      1,
+      limit / Math.max(this.documentWidth, this.documentHeight),
+    )
+    const width = Math.max(1, Math.floor(this.documentWidth * multiplier))
+    const height = Math.max(1, Math.floor(this.documentHeight * multiplier))
+    // Fabric truncates a subpixel edge to zero. Use an intermediate whose
+    // shortest edge is one pixel, then reduce it to the bounded output.
+    const thin =
+      this.documentWidth * multiplier < 1 ||
+      this.documentHeight * multiplier < 1
+    const source = this.createDocumentCanvas(
+      thin
+        ? (1 + Number.EPSILON) /
+            Math.min(this.documentWidth, this.documentHeight)
+        : multiplier,
+    )
+    let resized: HTMLCanvasElement | undefined
+    try {
+      signal.throwIfAborted()
+      let output = source
+      if (thin) {
+        resized = document.createElement('canvas')
+        resized.width = width
+        resized.height = height
+        const context = resized.getContext('2d')
+        if (!context) throw new Error('A 2D canvas is required for preview.')
+        context.drawImage(source, 0, 0, width, height)
+        output = resized
+      }
+      const dataUrl = encodeRasterDataUrl(output, 'png', 1)
+      signal.throwIfAborted()
+      return { dataUrl, width, height }
+    } finally {
+      releaseRasterCanvas(source)
+      if (resized) releaseRasterCanvas(resized)
+    }
+  }
+
   public async exportDataUrl(
     format: ExportImageFormat = 'png',
     quality = 0.92,

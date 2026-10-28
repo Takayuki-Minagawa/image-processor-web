@@ -26,6 +26,7 @@ Pixelweave Studioは、編集対象の画像データをブラウザ内で処理
 - 編集可能なschema version 4の`.pwx.json`プロジェクト保存と、version 1〜3プロジェクトの自動移行
 - PNG / JPEG / WebP / SVG、複数ページPNG ZIP、mm物理寸法・DPI・bleed・crop mark・混在ページ寸法に対応する画像PDF（可逆圧縮／JPEG品質選択）、GIF、対応ブラウザでのMP4 / WebM書き出し
 - 書き出しダイアログからPNGをクリップボードへコピーし、他のアプリへ貼り付け（対応ブラウザ・権限が必要）
+- [参照PDFと現在ページの比較](./docs/PDF_COMPARISON.md)：横並び、物理寸法一致時の重ね表示・差分表示
 - OPFSのページ差分保存・旧形式復旧・localStorage fallbackを備えた自動保存
 - PWAインストール、オフライン起動
 

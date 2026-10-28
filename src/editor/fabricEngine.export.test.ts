@@ -24,6 +24,123 @@ afterEach(async () => {
 })
 
 describe('raster export', () => {
+  it('captures a bounded preview without changing the document, selection, viewport or status', async () => {
+    const engine = createEngine(2_000, 1_001)
+    const selected = engine.addRect({ fill: '#ff0000' })
+    const canvas = engine.getCanvas()
+    canvas.setDimensions({ width: 320, height: 240 })
+    canvas.setViewportTransform([2, 0, 0, 2, 17, -23])
+    const before = engine.snapshot()
+    const onChanged = vi.fn()
+    const onStatus = vi.fn()
+    engine.setCallbacks({ onChanged, onStatus })
+    const render = vi.spyOn(canvas, 'toCanvasElement')
+
+    const preview = await engine.renderPreview(
+      9_999,
+      new AbortController().signal,
+    )
+
+    expect(preview).toMatchObject({ width: 1_600, height: 800 })
+    expect(
+      parseImageDimensions(
+        Uint8Array.from(atob(preview.dataUrl.split(',')[1]), (character) =>
+          character.charCodeAt(0),
+        ),
+        'image/png',
+      ),
+    ).toEqual({ width: 1_600, height: 800 })
+    expect(engine.snapshot()).toEqual(before)
+    expect(engine.getSelectedLayerIds()).toEqual([selected])
+    expect(canvas.viewportTransform).toEqual([2, 0, 0, 2, 17, -23])
+    expect([canvas.getWidth(), canvas.getHeight()]).toEqual([320, 240])
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(onStatus).not.toHaveBeenCalled()
+    const output = render.mock.results[0].value as HTMLCanvasElement
+    expect([output.width, output.height]).toEqual([0, 0])
+  })
+
+  it.each([
+    [1, 8_192],
+    [8_192, 1],
+  ])(
+    'keeps a thin %s × %s preview nonempty and bounded',
+    async (width, height) => {
+      const engine = createEngine(width, height)
+      const preview = await engine.renderPreview(
+        1_600,
+        new AbortController().signal,
+      )
+      expect(preview.width).toBe(width === 1 ? 1 : 1_600)
+      expect(preview.height).toBe(height === 1 ? 1 : 1_600)
+    },
+  )
+
+  it('does not upscale a small preview', async () => {
+    const engine = createEngine()
+    expect(
+      await engine.renderPreview(1_600, new AbortController().signal),
+    ).toMatchObject({ width: 200, height: 150 })
+  })
+
+  it('uses a small intermediate when a requested one-pixel preview would truncate an edge', async () => {
+    const engine = createEngine(200, 100)
+    const render = vi.spyOn(engine.getCanvas(), 'toCanvasElement')
+    const preview = await engine.renderPreview(1, new AbortController().signal)
+    expect(preview).toMatchObject({ width: 1, height: 1 })
+    expect(render.mock.calls[0][0]).toBeCloseTo(0.01)
+  })
+
+  it('rejects cancellation before or while waiting for adjustments without rendering', async () => {
+    const engine = createEngine()
+    const controller = new AbortController()
+    const wait = vi
+      .spyOn(engine, 'waitForAdjustmentLayers')
+      .mockImplementation(async () => {
+        controller.abort()
+      })
+    const render = vi.spyOn(engine.getCanvas(), 'toCanvasElement')
+    await expect(
+      engine.renderPreview(1_600, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(
+      engine.renderPreview(1_600, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(wait).toHaveBeenCalledOnce()
+    expect(render).not.toHaveBeenCalled()
+  })
+
+  it('releases a preview rejected after encoding without changing the viewport', async () => {
+    const engine = createEngine()
+    const controller = new AbortController()
+    const output = document.createElement('canvas')
+    output.width = 200
+    output.height = 150
+    engine.getCanvas().setViewportTransform([2, 0, 0, 2, 17, -23])
+    vi.spyOn(engine.getCanvas(), 'toCanvasElement').mockReturnValue(output)
+    vi.spyOn(output, 'toDataURL').mockImplementation(() => {
+      controller.abort()
+      return 'data:image/png;base64,AA=='
+    })
+    await expect(
+      engine.renderPreview(1_600, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect([output.width, output.height]).toEqual([0, 0])
+    expect(engine.getCanvas().viewportTransform).toEqual([2, 0, 0, 2, 17, -23])
+  })
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects invalid preview size %s before rendering',
+    async (size) => {
+      const engine = createEngine()
+      const render = vi.spyOn(engine.getCanvas(), 'toCanvasElement')
+      await expect(
+        engine.renderPreview(size, new AbortController().signal),
+      ).rejects.toThrow(RangeError)
+      expect(render).not.toHaveBeenCalled()
+    },
+  )
+
   it.each(['exportDataUrl', 'exportBlob'] as const)(
     '%s uses the same truncated dimensions as the shared export preview',
     async (method) => {

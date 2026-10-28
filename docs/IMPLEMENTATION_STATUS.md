@@ -57,7 +57,7 @@ C0は**部分的な責務分割を追加済み**と再評価する。文書状�
 - PDF.jsの公開Display APIで、PDF選択・drop、サムネイル、範囲指定、原寸のロック済み背景取込を接続した。新規文書は未保存確認後に履歴を初期化し、ページ追加は既存の文書transaction・Undo / Redoを使う。取消・失敗時に編集中の文書を保持する。
 - `physicalSize`と任意の`editorState.pdfImport`を保存し、schema v4を維持する。v1〜v4の読込、未知versionの拒否、保存・復元・autosaveを既存validatorで扱い、原PDF bytesと元ファイル名は永続化しない。
 - 既存raster PDFへ可逆Flate圧縮とJPEG品質選択を追加した。既定は可逆圧縮で、透明部分は白へ合成する。P1候補のうち、mm寸法・ページ数・DPI・画像化の制約・取込DPI超過を確認する軽量preflightを併設した。
-- 入力50 MiB、原文書1,000ページ、1回20ページ、1ページ32 MP・選択合計64 MPの上限を設ける。パスワード要求PDFとXFAは明示エラーにする。SVG原寸新規作成、設定保存、比較、ベクターPDF試作・PDF要素分解は次段階とする。
+- 入力50 MiB、原文書1,000ページ、1回20ページ、1ページ32 MP・選択合計64 MPの上限を設ける。パスワード要求PDFとXFAは明示エラーにする。SVG原寸新規作成・出力設定保存・参照PDF比較は後続実装済み（下記参照）。ベクター／ハイブリッドPDF試作・PDF要素分解は未実装である。
 
 実装判断・上限・ライセンス・試験境界は[PDF入出力仕様](./PDF_IO.md)を参照。ローカルでformat・lint・TypeScript・Vitest 881件・本番build・PagesパスE2E 68件が成功した（macOS 26.6.2 / Chromium 151.0.7922.34）。PDF専用3ケースには全画素一致の可逆往復と初回ロード後の通信遮断試験を含む。Safari / PreviewとM4 Max実機の性能は未検証である。
 
@@ -112,6 +112,10 @@ timeline evaluatorはrendererとwall clockから独立し、任意時刻のpage 
 PDFは1 page 1 raster XObjectのPDF 1.7で、物理boxと任意crop markを保持する。画像の既定圧縮は可逆Flateで、JPEGを選ぶ場合は品質を指定する。出力前の寸法・ページ数・DPI確認と64 MP総画素／128 MiB圧縮画像データの上限を持つ。GIFはfull-canvas indexed GIF89aで、UIはRGB332固定palette、最長辺480px、最大120 frameに制限する。videoはCanvas streamをbrowserの`MediaRecorder`へ渡し、native MP4 / WebM containerが利用できなければ同じframe列をGIFへfallbackする。WebCodecsのcodec / muxer capability modelは将来の決定論的pipeline用であり、現在のvideo記録とは別境界である。
 
 release前のviewer / browser確認は[PDF / GIF / video書き出し互換確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)を使う。
+
+## 参照PDFとの比較
+
+現在ページと再選択した参照PDFの1ページを、最大1,600pxの読取専用プレビューで比較できる。横並び表示、物理寸法一致時の重ね表示・RGB差分表示、取消と資源解放を扱う。文書・履歴や原本保存方針を変えない。要望残件の対応表と検証境界は[参照PDFとの比較](./PDF_COMPARISON.md)を参照。
 
 ## 出力設定プリセット
 
