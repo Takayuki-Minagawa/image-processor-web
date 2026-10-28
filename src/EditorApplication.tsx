@@ -19,6 +19,7 @@ import AdjustmentControl from './components/AdjustmentControl'
 import SelectedTextEditor from './components/SelectedTextEditor'
 import { inspectorCopy } from './i18n.inspector'
 import { pdfCopy, pdfExportErrorMessage } from './i18n.pdf'
+import { createEditorProjectMetadata } from './editor/projectMetadata'
 import type { PdfRasterPage } from './import/pdf'
 import type { PdfImportTarget } from './components/PdfImportDialog'
 import { LabeledHistory, type HistoryLabel } from './editor/labeledHistory'
@@ -1515,13 +1516,11 @@ export default function EditorApplication() {
       }
       const current = snapshot ?? engine!.snapshot()
       assertRestorableEditorSnapshot(current)
-      const metadata: JsonObject = {
-        name: projectNameRef.current.trim() || '無題のデザイン',
-        createdAt: createdAtRef.current,
-      }
-      if (sourceNameRef.current) {
-        metadata.sourceFileName = sourceNameRef.current
-      }
+      const metadata = createEditorProjectMetadata(
+        projectNameRef.current,
+        createdAtRef.current,
+        sourceNameRef.current,
+      )
       synchronizeActiveDesignPage(current)
       if (designPagesRef.current.length === 0) {
         const id = createDesignPageId()
@@ -2658,6 +2657,8 @@ export default function EditorApplication() {
       throw new Error(copy.projectLimit)
     const { createProjectDocument, serializeProject } =
       await import('./editor/project')
+    const nextCreatedAt =
+      target === 'replace' ? new Date().toISOString() : createdAtRef.current
     const candidate = createProjectDocument({
       pages: next.map((page) => ({
         id: page.id,
@@ -2674,11 +2675,14 @@ export default function EditorApplication() {
         ...(page.physicalSize ? { physicalSize: page.physicalSize } : {}),
         ...(page.background ? { background: page.background } : {}),
         ...(page.timeline ? { timeline: page.timeline } : {}),
+        ...(page.thumbnail ? { thumbnail: page.thumbnail } : {}),
       })),
       activePageId: prepared[0].id,
-      metadata: {
-        name: target === 'replace' ? copy.untitled : projectNameRef.current,
-      },
+      metadata: createEditorProjectMetadata(
+        target === 'replace' ? copy.untitled : projectNameRef.current,
+        nextCreatedAt,
+        target === 'append' ? sourceNameRef.current : undefined,
+      ),
     })
     if (new Blob([serializeProject(candidate)]).size > MAX_PROJECT_BYTES)
       throw new Error(copy.projectLimit)
@@ -2699,7 +2703,7 @@ export default function EditorApplication() {
       if (target === 'replace') {
         projectNameRef.current = copy.untitled
         setProjectName(copy.untitled)
-        createdAtRef.current = new Date().toISOString()
+        createdAtRef.current = nextCreatedAt
         sourceNameRef.current = undefined
         saveHandleRef.current = null
       }

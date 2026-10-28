@@ -79,7 +79,9 @@ Flateは単体試験で展開後のRGB全画素一致を確認でき、既存wri
 
 ## 検証記録と残る確認
 
-今回の全体検証は実行中。最終的なコマンド結果とブラウザE2Eの件数・環境はPRに記録する。GitHub Actionsの自動CIは使わず、マージ前にローカルでformat・lint・Vitest・build・PagesサブパスのPlaywrightを実行する。手動CI workflowは残し、mainへのpush後のPages workflowはbuildとdeployだけを実行する。ローカル試験成功、Actions build成功、公開版への反映は別々に確認する。
+2026-10-28、macOS 26.6.2 / Node.js 22.18.0 / Chromium 151.0.7922.34で、format・lint・TypeScript・Vitest 129ファイル881件・本番build・PagesサブパスのPlaywright 68件が成功した。PDF専用E2Eは3件で、混在2ページの入力→可逆画像PDF→再取込のRGBA全画素が一致した。全処理の初回ロード後、通信遮断下で別PDFの取込・ページ追加・プロジェクト保存を確認した。本番依存のnpm auditは既知の脆弱性0件。GitHub Actionsの自動CIは使わず、マージ前にローカルでformat・lint・Vitest・build・PagesサブパスのPlaywrightを実行する。手動CI workflowは残し、mainへのpush後のPages workflowはbuildとdeployだけを実行する。ローカル試験成功、Actions build成功、公開版への反映は別々に確認する。
+
+既存の詳細フィルター画面比較は、未変更mainでもmacOSのシステムフォント差を再現した。現行actualと未変更main actualのPNGが完全一致したため、main由来のmacOS専用baselineを追加した。既存OSのbaselineと比較閾値は変更していない。
 
 自動試験の対象は以下とする。
 
@@ -89,7 +91,7 @@ Flateは単体試験で展開後のRGB全画素一致を確認でき、既存wri
 - Flate展開後の画素一致、白合成、JPEG品質、取消、ページbox / xref、出力前の寸法・制約表示。
 - 実ブラウザでのPDF読込・書き出し、Pagesサブパスでのworker / 資産取得、原本送信のない処理とオフライン再利用。
 
-macOS Preview、Safari実機、日本語埋込フォントを含む多様な実PDF、M4 Max・36 GBでの1 / 10 / 100ページの時間・ピークメモリ測定は未実施である。これらを自動試験の成功から推定しない。手動互換確認は[書き出し確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)へ実施環境と結果を記録する。寸法はTrimBox誤差0.1 mm以内、描画pixelは丸め後の期待値を基準とし、異なるエンジン間の完全画素一致は要求しない。
+macOS Preview、Safari実機、日本語埋込フォントを含む多様な実PDF、M4 Max・36 GBでの代表的な少数ページの時間・ピークメモリ測定は未実施である。これらを自動試験の成功から推定しない。手動互換確認は[書き出し確認手順](./EXPORT_COMPATIBILITY_CHECKLIST.md)へ実施環境と結果を記録する。寸法はTrimBox誤差0.1 mm以内、描画pixelは丸め後の期待値を基準とし、異なるエンジン間の完全画素一致は要求しない。
 
 ## 調査した一次資料
 
